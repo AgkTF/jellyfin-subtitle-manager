@@ -6,7 +6,7 @@ Evaluate a standalone, report-first workflow using existing acquisition and sync
 
 Bazarr is the strongest integrated option investigated, but requires Sonarr/Radarr's catalogues. Neither appeared in the server's running containers or matching system services. Its built-in match scores must not be represented as probabilities of correct synchronization or translation. [1–5]
 
-Following this research, the user selected the standalone, report-first pilot using existing components. Implementation has not started. No tools were installed, provider credentials accessed, subtitle downloads performed, or media/configuration files modified on the server. Research files were written in this local project.
+Following this research, the user selected the standalone, report-first pilot using existing components. The read-only inventory implementation is now available; see `../pilot-plan.md` and `../../README.md`. At the time of this initial research, no tools were installed, provider credentials accessed, subtitle downloads performed, or media/configuration files modified on the server. Research files were written in this local project.
 
 ## Confirmed brief
 
@@ -107,7 +107,7 @@ SubDL also offers AI translation, which is outside our v1 scope. The reviewed se
 
 **Recommendation:** test OpenSubtitles.com and SubDL together before paying for either. Compare accepted Arabic coverage, not just search-result counts. No library titles were submitted to provider APIs during this research.
 
-## Suggested pilot (not yet executed)
+## Broader pilot sequence (inventory implemented; later stages not executed)
 
 1. Build a read-only inventory/report of video identity, sidecar associations, embedded subtitle streams, language/type tags, and ambiguities. Keep media-file identity distinct from movie/episode identity.
 2. Select 10–20 titles across movies, series, anime, old encodings, image subtitles, alternate cuts, embedded bilingual tracks, and known troublesome cases.

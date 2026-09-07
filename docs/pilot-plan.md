@@ -34,11 +34,17 @@ The existing research document contains private library examples and server path
 The directory rename and fresh-session transition are complete. Private host and
 media-root settings are retained in ignored local notes, not tracked defaults.
 
-## Next actions after resuming
+## Implementation status
 
-1. Confirm the new working directory and review this plan and research.
-2. Initialize Git with privacy-safe ignore rules and sanitized documentation.
-3. Implement and test the read-only CLI/report stage using synthetic fixtures before a real library scan.
-4. Run the approved read-only scan and present the report and proposed validation batch.
+- Directory transition completed; Git initialized with sanitized documentation and
+  privacy-safe ignore rules. Original research is retained in ignored local notes.
+- The Python/uv CLI, standalone SSH scanner, JSON inventory, static HTML report,
+  and metadata-varied proposed validation batch are implemented.
+- Synthetic tests include real FFmpeg media, invalid media, standalone execution,
+  association ambiguity, image subtitles, legacy encoding, and error handling.
+- See `../README.md` for commands, output locations, and known limitations.
+- Actual scan evidence and review batches belong in ignored `reports/`, not Git.
 
-Implementation has not started. Detailed CLI flags, inventory schema, report layout, and testing structure remain engineering work within these boundaries; discuss any material scope change with the user.
+Next: review the real inventory and agree on the validation batch. Provider setup,
+downloads, synchronization, and publication remain separately authorized later
+work. Discuss material scope changes; do not repeat the settled interview.
