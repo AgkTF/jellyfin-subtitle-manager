@@ -1,0 +1,23 @@
+# Private environment, inventories, reports, and subtitle artifacts
+/private/
+/reports/
+.env
+.env.*
+*.pem
+*.key
+*.srt
+*.ass
+*.ssa
+*.sub
+*.idx
+*.vtt
+
+# Python and tools
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+/dist/
+/build/
