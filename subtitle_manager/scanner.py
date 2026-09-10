@@ -88,11 +88,22 @@ def sidecar(path, root, videos, all_paths):
               'language': langs[0] if len(langs) == 1 else None, 'language_evidence': 'filename_suffix',
               'representation': 'image' if ext in {'.idx', '.sup'} else 'unknown' if ext == '.sub' else 'text',
               'status': 'unverified', 'provenance': 'unknown', **flags(suffix), 'issues': []}
+    try:
+        stat = path.stat()
+        result.update(size_bytes=stat.st_size, mtime_ns=stat.st_mtime_ns)
+    except OSError as exc:
+        result['issues'].append('stat_failed: ' + str(exc))
     if ext == '.idx':
         companion = next((p for p in all_paths if p.parent == path.parent and p.stem == path.stem and p.suffix.lower() == '.sub'), None)
         result['companion'] = companion.relative_to(root).as_posix() if companion else None
         if companion is None:
             result['issues'].append('missing_idx_companion')
+        else:
+            try:
+                companion_stat = companion.stat()
+                result['companion_identity'] = {'size_bytes': companion_stat.st_size, 'mtime_ns': companion_stat.st_mtime_ns}
+            except OSError as exc:
+                result['issues'].append('companion_stat_failed: ' + str(exc))
     if ext != '.sup':
         try:
             info, text = prefix_info(path)
@@ -111,6 +122,12 @@ def sidecar(path, root, videos, all_paths):
                 result['issues'].append('language_script_conflict')
         except OSError as exc:
             result['issues'].append('prefix_read_failed: ' + str(exc))
+    try:
+        after = path.stat()
+        if (result.get('size_bytes'), result.get('mtime_ns')) != (after.st_size, after.st_mtime_ns):
+            result['issues'].append('file_changed_during_read')
+    except OSError as exc:
+        result['issues'].append('stat_failed: ' + str(exc))
     if not result['language']:
         result['issues'].append('language_unknown_or_multiple')
     if result['association'] != 'basename_candidate':

@@ -1,7 +1,7 @@
 # jellyfin-subtitle-manager
 
-Read-only subtitle inventory pilot. Python 3.12+, managed with uv; no Python
-runtime dependencies. The target needs Python 3 and ffprobe. Nothing is installed
+Read-only subtitle inventory with local review evidence and dry-run planning.
+Python 3.12+, managed with uv; no Python runtime dependencies. The target needs Python 3 and ffprobe. Nothing is installed
 on the target: SSH receives a standalone scanner on standard input.
 
 ## Run
@@ -28,7 +28,99 @@ Reports contain private filenames and paths. Do not commit or share them. A cust
 `--output` directory is not automatically ignored by Git. Files are created with
 owner-only permissions. No remote, upload, or publication is configured.
 
-## Scope and limits
+## Review and planning foundation (stage 2)
+
+This is an underlying capability, **not the final UI or hosting decision**. The
+local CLI/static report remains provisional. No web service, notifications,
+scheduling, provider integration, or action execution is introduced.
+
+```sh
+# Import a structured human-observation packet against its source inventory.
+uv run python -m subtitle_manager.review import \
+  --inventory reports/SCAN/inventory.json --library my-library \
+  --observations private/observations.json
+
+# Combine those reviews with this or a newer saved inventory; never rescans media.
+uv run python -m subtitle_manager.review plan \
+  --inventory reports/SCAN/inventory.json --library my-library
+```
+
+Use the same explicit `--library` identifier for the same library over time.
+Identical paths in another library must use a different identifier. Default
+`--store private/reviews` is ignored local storage: immutable, owner-private JSON
+records with atomic publication and idempotent import. Back it up privately;
+Git does not preserve it. A custom store/output location is not automatically
+ignored. Avoid pointing it at directories owned by other applications.
+
+`plan` produces a new timestamped `reports/review-*/plan.json` and combined
+`report.html`. It does not edit original inventory/report files or visit the
+server. “Current” means matching the **saved inventory supplied**, not an assertion
+that a live server has not changed since that scan.
+
+- Reviews keep source notes, client, language, medium, rendering, timing, meaning,
+  and sample scope separately. Missing exact tracks/timestamps stay unknown.
+- Changed root/path, video size/mtime, audio/subtitle evidence, or associated
+  sidecar evidence flags reviews as stale. Missing/failed observations on partial
+  scans stay historical, not proof of deletion. Renames do not transfer reviews.
+- These comparisons are not full content hashes. An undetected content change
+  preserving all recorded metadata cannot be ruled out. Older inventories lack
+  sidecar stat metadata: naming proposals are blocked, and the first enriched
+  rescan may conservatively mark their reviews stale.
+- Different client outcomes coexist; contradictory same-client results are
+  flagged, not silently resolved by import order. This stage does not support
+  superseding/deleting reviews or making formal acceptance decisions.
+- Human-reported burned-in dialogue is not represented as a discovered stream.
+- Label proposals require an explicitly selected sidecar path. Preserve format,
+  forced/SDH flags; block known collisions. Every proposal still requires a live
+  preflight and separate publication approval. No rename commands are emitted.
+- Timing concerns never invent an offset. Playback success never establishes
+  human Arabic authorship or full-dialogue completion.
+
+Observation packet schema (synthetic example):
+
+```json
+{
+  "schema_version": 1,
+  "items": [{
+    "path": "Movie.mkv",
+    "observation": {
+      "summary": "Arabic readable on TV; language label missing",
+      "evidence_reference": "local note identifier, not fetched by the tool",
+      "evidence_note": "User report; exact selected sidecar not confirmed.",
+      "findings": [{
+        "language": "ar",
+        "client": "Android TV",
+        "medium": "external",
+        "rendering": "passed",
+        "timing": "passed",
+        "meaning": "unknown",
+        "sample_scope": "middle and end; exact timestamps not recorded",
+        "notes": "User identified Arabic; authorship unknown"
+      }],
+      "concerns": [{
+        "kind": "language_label",
+        "language": "ar",
+        "detail": "Client shows undefined",
+        "deferred": false
+      }]
+    }
+  }]
+}
+```
+
+Findings require `language` (`en`/`ar`), `medium` (`embedded`, `external`,
+`burned_in`, `unknown`), explicit client/sample_scope/notes strings, and rendering,
+timing, meaning outcomes (`passed`, `failed`, `issue`, `unknown`). An optional
+`sidecar_path` asserts an explicitly confirmed external association; do not fill
+it from a basename guess. Valid concern kinds: `language_label`, `timing`,
+`client_playback`, `client_font`, `identity`, `overlay`, `encoding`. A concern's
+language may be `null` when it applies to the file or multiple languages.
+All other unknown fields are rejected. Evidence references are labels, not paths
+the importer will open. There is no acceptance field.
+
+See [the stage-2 scope and design](docs/stage-2-plan.md).
+
+## Scope and limits (scanner)
 
 - Sequential ffprobe metadata reads with a 30-second per-file timeout, a
   0.1-second pause, CPU niceness +15, and idle I/O priority where available.
@@ -64,7 +156,10 @@ owner-only permissions. No remote, upload, or publication is configured.
 `scan()` event iterator and can run without the local package. The CLI owns SSH,
 local evidence persistence, interruption handling, and output permissions.
 `report.py` aggregates events and renders reports without touching media.
-Tests exercise the scan/report interface with synthetic metadata and include a
+`reviews.py` owns immutable review storage and pure planning; `review.py` is the
+provisional offline CLI. Tests cover persistence, rescan safety, source immutability,
+client-specific observations, blocked proposals, and offline report generation.
+Scanner tests exercise the scan/report interface with synthetic metadata and include a
 real, tiny FFmpeg-generated bilingual-tag fixture when FFmpeg is available.
 
 See [the approved plan](docs/pilot-plan.md), [domain glossary](CONTEXT.md), and

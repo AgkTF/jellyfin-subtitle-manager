@@ -45,6 +45,20 @@ media-root settings are retained in ignored local notes, not tracked defaults.
 - See `../README.md` for commands, output locations, and known limitations.
 - Actual scan evidence and review batches belong in ignored `reports/`, not Git.
 
-Next: review the real inventory and agree on the validation batch. Provider setup,
-downloads, synchronization, and publication remain separately authorized later
-work. Discuss material scope changes; do not repeat the settled interview.
+Ten titles have now been reviewed with the user. Private observations and the
+consolidated findings are retained in ignored local storage. Do not repeat those
+checks just because the original inventory contains only metadata.
+
+The approved stage-2 review/planning foundation is implemented; see
+`stage-2-plan.md` and `../README.md`. It imports persistent human observations,
+checks applicability against saved scans, and emits dry-run plans in a new report.
+The initial ten reviews have been imported without changing the scan evidence.
+
+The CLI/static report remains provisional. Final UI, platform/hosting, interaction,
+scheduling, and notifications are deliberately undecided and must be discussed
+before user-facing workflows or deployment. Python vs a larger TypeScript
+application is also deferred.
+
+Next: inspect the combined plan and scope any real label or timing correction
+separately. Provider setup, downloads, synchronization, and publication remain
+later work requiring their own approval. Discuss material scope changes.

@@ -103,7 +103,41 @@ def assemble(events):
     return inventory
 
 
-def render_html(inventory):
+def _review_html(plan):
+    def esc(value):
+        return html.escape(str(value), quote=True)
+
+    def evidence(value):
+        return '<pre>' + esc(json.dumps(value, ensure_ascii=True, indent=2)) + '</pre>'
+
+    def action_table(actions):
+        rows = ['<table><tr><th>Video / language</th><th>Action / status</th><th>Reason and constraints</th></tr>']
+        for action in actions:
+            extra = {k: action[k] for k in ('proposal', 'clients', 'proposed_offset_seconds', 'finding') if k in action}
+            rows.append('<tr><td>' + esc(action['path']) + '<br>' + esc(action['language'] or 'file') +
+                        '</td><td>' + esc(action['kind'].replace('_', ' ')) + '<br>' + esc(action['status']) +
+                        '</td><td>' + esc(action['reason']) + (evidence(extra) if extra else '') + '</td></tr>')
+        return '\n'.join(rows + ['</table>'])
+
+    body = ['<h2>Human review and dry-run action plan</h2>',
+            '<p><strong>Provisional report, not a final product UI. No actions execute; nothing is accepted.</strong> '
+            'Current observations match saved metadata, not a verified content hash. '
+            'Client-specific failures do not invalidate successful playback on another client.</p>',
+            evidence(plan['summary']), '<h3>Recorded observations</h3>']
+    for view in plan['observations']:
+        record = view['record']
+        body.append('<details><summary>' + esc(record['snapshot']['path']) + ' — ' + esc(view['validity']) +
+                    '</summary><p>' + esc(record['observation']['summary']) + '</p>' +
+                    evidence(record['observation']) + '</details>')
+    reviewed = [a for a in plan['actions'] if a['evidence_ids']]
+    other = [a for a in plan['actions'] if not a['evidence_ids']]
+    body += ['<h3>Actions for recorded reviews</h3>', action_table(reviewed),
+             '<details><summary>Other inventory actions (' + str(len(other)) + ')</summary>',
+             action_table(other), '</details><h3>Evidence limits</h3>', evidence(plan['limitations'])]
+    return '\n'.join(body)
+
+
+def render_html(inventory, review_plan=None):
     esc = lambda value: html.escape(str(value), quote=True)
     def details(value):
         return '<pre>' + esc(json.dumps(value, ensure_ascii=True, indent=2)) + '</pre>'
@@ -119,7 +153,10 @@ def render_html(inventory):
             '<p>Scan reached end: ' + esc(inventory['complete']) + '. Per-file and traversal errors are retained below.</p>',
             '<h2>Summary (files, not titles)</h2><table>']
     body += ['<tr><th>' + esc(k.replace('_', ' ')) + '</th><td>' + esc(v) + '</td></tr>' for k, v in inventory['summary'].items()]
-    body += ['</table><h2>Proposed validation batch</h2><p>Up to 15 video files chosen for metadata variety, not statistical representation. '
+    body += ['</table>']
+    if review_plan is not None:
+        body.append(_review_html(review_plan))
+    body += ['<h2>Original metadata-proposed validation batch</h2><p>Up to 15 video files chosen for metadata variety, not statistical representation. '
              'Confirm identities, deduplicate series/titles, and add known troublesome cases before review. No provider activity is authorized.</p><ol>']
     body += ['<li>' + esc(v['path']) + '<br><small>' + esc(', '.join(v['reasons'])) + '</small></li>' for v in inventory['proposed_validation_batch']]
     body += ['</ol><h2>Scan evidence and errors</h2>', details(inventory.get('scan')), details(inventory['errors']), '<h2>Videos</h2>']
