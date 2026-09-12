@@ -16,8 +16,17 @@ An Arabic subtitle authored or translated by a person, with Modern Standard Arab
 **Review-needed item**:
 A video whose subtitle candidates lack sufficient evidence for automatic selection and need human review.
 
+**Subtitle request**:
+A user-initiated effort to address one language need for a particular video file. A request is distinct from the candidates considered for it and does not by itself authorize publication.
+
+**Deferred request**:
+A subtitle request the user has chosen not to pursue for now, without rejecting its candidates. Its history is retained, and work resumes only at the user's explicit request.
+
 **Accepted subtitle**:
 A subtitle approved for a particular video file through sufficient automated evidence or explicit human confirmation. Existing subtitles are initially unverified, not automatically accepted; verified embedded tracks can satisfy a language requirement.
+
+**Publication approval**:
+Explicit permission to make an exact subtitle candidate available at a specified destination for a particular video file. Publication approval alone does not establish subtitle acceptance, full-dialogue coverage, or human authorship.
 
 **Embedded subtitle**:
 A subtitle track contained within the video file rather than stored in a separate file.
