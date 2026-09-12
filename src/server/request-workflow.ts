@@ -10,7 +10,7 @@ export interface VideoIdentity {
 
 export type RequestLifecycle = "active" | "deferred";
 
-export interface RequestView {
+export interface RequestSummary {
   id: string;
   version: number;
   video: VideoIdentity;
@@ -18,8 +18,17 @@ export interface RequestView {
   lifecycle: RequestLifecycle;
 }
 
+export interface RequestLifecycleEntry {
+  version: number;
+  lifecycle: RequestLifecycle;
+}
+
+export interface RequestView extends RequestSummary {
+  lifecycleHistory: RequestLifecycleEntry[];
+}
+
 export interface RequestListView {
-  requests: RequestView[];
+  requests: RequestSummary[];
 }
 
 export type RequestCommand =
@@ -71,7 +80,12 @@ interface RequestRow {
   lifecycle: RequestLifecycle;
 }
 
-function toRequestView(row: RequestRow): RequestView {
+interface RequestLifecycleRow {
+  version: number;
+  lifecycle: RequestLifecycle;
+}
+
+function toRequestSummary(row: RequestRow): RequestSummary {
   return {
     id: row.request_id,
     version: row.version,
@@ -89,6 +103,7 @@ export function openRequestWorkflow(options: {
   databasePath: string;
 }): RequestWorkflow {
   const database = new Database(options.databasePath);
+  database.pragma("foreign_keys = ON");
 
   database.exec(`
     CREATE TABLE IF NOT EXISTS subtitle_requests (
@@ -99,7 +114,17 @@ export function openRequestWorkflow(options: {
       video_label TEXT NOT NULL,
       language TEXT NOT NULL,
       lifecycle TEXT NOT NULL
-    ) STRICT
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS request_lifecycle_history (
+      request_id TEXT NOT NULL REFERENCES subtitle_requests(request_id),
+      version INTEGER NOT NULL,
+      lifecycle TEXT NOT NULL,
+      PRIMARY KEY (request_id, version)
+    ) STRICT;
+
+    INSERT OR IGNORE INTO request_lifecycle_history (request_id, version, lifecycle)
+    SELECT request_id, version, lifecycle FROM subtitle_requests;
   `);
 
   const insertRequest = database.prepare(`
@@ -132,57 +157,96 @@ export function openRequestWorkflow(options: {
     WHERE lifecycle = ?
     ORDER BY request_id
   `);
+  const insertLifecycleHistory = database.prepare(`
+    INSERT INTO request_lifecycle_history (request_id, version, lifecycle)
+    VALUES (?, ?, ?)
+  `);
+  const selectLifecycleHistory = database.prepare(`
+    SELECT version, lifecycle
+    FROM request_lifecycle_history
+    WHERE request_id = ?
+    ORDER BY version
+  `);
+
+  const readRequest = (requestId: string): RequestView | undefined => {
+    const row = selectRequest.get(requestId) as RequestRow | undefined;
+    if (row === undefined) {
+      return undefined;
+    }
+    const lifecycleHistory = selectLifecycleHistory.all(
+      requestId,
+    ) as RequestLifecycleRow[];
+    return { ...toRequestSummary(row), lifecycleHistory };
+  };
+
+  const createRequest = database.transaction(
+    (command: Extract<RequestCommand, { type: "create-request" }>) => {
+      const version = command.request.version + 1;
+      const row = insertRequest.get(
+        command.request.id,
+        version,
+        command.video.libraryId,
+        command.video.id,
+        command.video.label,
+        command.language,
+        "active",
+      ) as RequestRow | undefined;
+      if (row === undefined) {
+        throw new RequestVersionConflictError();
+      }
+      insertLifecycleHistory.run(row.request_id, row.version, row.lifecycle);
+    },
+  );
+  const deferActiveRequest = database.transaction(
+    (request: { id: string; version: number }) => {
+      const row = deferRequest.get(request.id, request.version) as
+        | RequestRow
+        | undefined;
+      if (row === undefined) {
+        throw new RequestVersionConflictError();
+      }
+      insertLifecycleHistory.run(row.request_id, row.version, row.lifecycle);
+    },
+  );
+  const retryDeferredRequest = database.transaction(
+    (request: { id: string; version: number }) => {
+      const row = retryRequest.get(request.id, request.version) as
+        | RequestRow
+        | undefined;
+      if (row === undefined) {
+        throw new RequestVersionConflictError();
+      }
+      insertLifecycleHistory.run(row.request_id, row.version, row.lifecycle);
+    },
+  );
 
   const workflow: RequestWorkflow = {
     issue(command) {
       switch (command.type) {
-        case "create-request": {
-          const version = command.request.version + 1;
-          const row = insertRequest.get(
-            command.request.id,
-            version,
-            command.video.libraryId,
-            command.video.id,
-            command.video.label,
-            command.language,
-            "active",
-          ) as RequestRow | undefined;
-          if (row === undefined) {
-            throw new RequestVersionConflictError();
-          }
-          return toRequestView(row);
-        }
-        case "defer-request": {
-          const row = deferRequest.get(
-            command.request.id,
-            command.request.version,
-          ) as RequestRow | undefined;
-          if (row === undefined) {
-            throw new RequestVersionConflictError();
-          }
-          return toRequestView(row);
-        }
-        case "retry-request": {
-          const row = retryRequest.get(
-            command.request.id,
-            command.request.version,
-          ) as RequestRow | undefined;
-          if (row === undefined) {
-            throw new RequestVersionConflictError();
-          }
-          return toRequestView(row);
-        }
+        case "create-request":
+          createRequest(command);
+          break;
+        case "defer-request":
+          deferActiveRequest(command.request);
+          break;
+        case "retry-request":
+          retryDeferredRequest(command.request);
+          break;
       }
+      const view = readRequest(command.request.id);
+      if (view === undefined) {
+        throw new Error("Applied request command did not produce a request view");
+      }
+      return view;
     },
 
     getRequest(requestId) {
-      const row = selectRequest.get(requestId) as RequestRow | undefined;
-      return row === undefined ? undefined : toRequestView(row);
+      return readRequest(requestId);
     },
 
     listRequests(query) {
       const rows = selectRequestsByLifecycle.all(query.lifecycle) as RequestRow[];
-      return { requests: rows.map(toRequestView) };
+      return { requests: rows.map(toRequestSummary) };
     },
 
     close() {

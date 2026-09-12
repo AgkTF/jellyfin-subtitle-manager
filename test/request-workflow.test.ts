@@ -21,6 +21,11 @@ const syntheticRequest = {
   lifecycle: "active",
 } as const;
 
+const activeRequestView = {
+  ...syntheticRequest,
+  lifecycleHistory: [{ version: 1, lifecycle: "active" }],
+} as const;
+
 test("a subtitle request remains active after the workflow is reopened", (context) => {
   const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
   const databasePath = join(directory, "workflow.sqlite");
@@ -42,7 +47,7 @@ test("a subtitle request remains active after the workflow is reopened", (contex
   const reopened = openRequestWorkflow({ databasePath });
   context.after(() => reopened.close());
 
-  assert.deepEqual(reopened.getRequest(syntheticRequest.id), syntheticRequest);
+  assert.deepEqual(reopened.getRequest(syntheticRequest.id), activeRequestView);
   assert.deepEqual(reopened.listRequests({ lifecycle: "active" }), {
     requests: [syntheticRequest],
   });
@@ -81,7 +86,13 @@ test("a subtitle request remains deferred after the workflow is reopened", (cont
   const reopened = openRequestWorkflow({ databasePath });
   context.after(() => reopened.close());
 
-  assert.deepEqual(reopened.getRequest(syntheticRequest.id), deferredRequest);
+  assert.deepEqual(reopened.getRequest(syntheticRequest.id), {
+    ...deferredRequest,
+    lifecycleHistory: [
+      { version: 1, lifecycle: "active" },
+      { version: 2, lifecycle: "deferred" },
+    ],
+  });
   assert.deepEqual(reopened.listRequests({ lifecycle: "deferred" }), {
     requests: [deferredRequest],
   });
@@ -113,7 +124,7 @@ test("a stale command cannot defer a subtitle request", (context) => {
   const reopened = openRequestWorkflow({ databasePath });
   context.after(() => reopened.close());
 
-  assert.deepEqual(reopened.getRequest(syntheticRequest.id), syntheticRequest);
+  assert.deepEqual(reopened.getRequest(syntheticRequest.id), activeRequestView);
   assert.deepEqual(reopened.listRequests({ lifecycle: "active" }), {
     requests: [syntheticRequest],
   });
@@ -151,12 +162,55 @@ test("retrying a deferred subtitle request makes it durably active", (context) =
     ...syntheticRequest,
     version: 3,
   } as const;
-  assert.deepEqual(reopened.getRequest(syntheticRequest.id), retriedRequest);
+  assert.deepEqual(reopened.getRequest(syntheticRequest.id), {
+    ...retriedRequest,
+    lifecycleHistory: [
+      { version: 1, lifecycle: "active" },
+      { version: 2, lifecycle: "deferred" },
+      { version: 3, lifecycle: "active" },
+    ],
+  });
   assert.deepEqual(reopened.listRequests({ lifecycle: "active" }), {
     requests: [retriedRequest],
   });
   assert.deepEqual(reopened.listRequests({ lifecycle: "deferred" }), {
     requests: [],
+  });
+});
+
+test("a request view retains durable lifecycle history", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
+  const databasePath = join(directory, "workflow.sqlite");
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const workflow = openRequestWorkflow({ databasePath });
+  workflow.issue({
+    type: "create-request",
+    request: { id: syntheticRequest.id, version: 0 },
+    video: syntheticRequest.video,
+    language: syntheticRequest.language,
+  });
+  workflow.issue({
+    type: "defer-request",
+    request: { id: syntheticRequest.id, version: 1 },
+  });
+  workflow.issue({
+    type: "retry-request",
+    request: { id: syntheticRequest.id, version: 2 },
+  });
+  workflow.close();
+
+  const reopened = openRequestWorkflow({ databasePath });
+  context.after(() => reopened.close());
+
+  assert.deepEqual(reopened.getRequest(syntheticRequest.id), {
+    ...syntheticRequest,
+    version: 3,
+    lifecycleHistory: [
+      { version: 1, lifecycle: "active" },
+      { version: 2, lifecycle: "deferred" },
+      { version: 3, lifecycle: "active" },
+    ],
   });
 });
 
@@ -192,7 +246,7 @@ test("recreating a subtitle request cannot overwrite the durable request", (cont
   const reopened = openRequestWorkflow({ databasePath });
   context.after(() => reopened.close());
 
-  assert.deepEqual(reopened.getRequest(syntheticRequest.id), syntheticRequest);
+  assert.deepEqual(reopened.getRequest(syntheticRequest.id), activeRequestView);
   assert.deepEqual(reopened.listRequests({ lifecycle: "active" }), {
     requests: [syntheticRequest],
   });
