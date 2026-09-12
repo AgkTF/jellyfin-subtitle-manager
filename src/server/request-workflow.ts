@@ -38,6 +38,13 @@ export type RequestCommand =
         id: string;
         version: number;
       };
+    }
+  | {
+      type: "retry-request";
+      request: {
+        id: string;
+        version: number;
+      };
     };
 
 export interface RequestWorkflow {
@@ -49,7 +56,7 @@ export interface RequestWorkflow {
 
 export class RequestVersionConflictError extends Error {
   constructor() {
-    super("Request is not active at the expected version");
+    super("Request is not at the expected lifecycle and version");
     this.name = "RequestVersionConflictError";
   }
 }
@@ -111,6 +118,12 @@ export function openRequestWorkflow(options: {
     WHERE request_id = ? AND version = ? AND lifecycle = 'active'
     RETURNING request_id, version, library_id, video_id, video_label, language, lifecycle
   `);
+  const retryRequest = database.prepare(`
+    UPDATE subtitle_requests
+    SET version = version + 1, lifecycle = 'active'
+    WHERE request_id = ? AND version = ? AND lifecycle = 'deferred'
+    RETURNING request_id, version, library_id, video_id, video_label, language, lifecycle
+  `);
   const selectRequestsByLifecycle = database.prepare(`
     SELECT request_id, version, library_id, video_id, video_label, language, lifecycle
     FROM subtitle_requests
@@ -143,6 +156,16 @@ export function openRequestWorkflow(options: {
         }
         case "defer-request": {
           const row = deferRequest.get(
+            command.request.id,
+            command.request.version,
+          ) as RequestRow | undefined;
+          if (row === undefined) {
+            throw new RequestVersionConflictError();
+          }
+          return toRequestView(row);
+        }
+        case "retry-request": {
+          const row = retryRequest.get(
             command.request.id,
             command.request.version,
           ) as RequestRow | undefined;
