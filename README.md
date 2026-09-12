@@ -28,6 +28,23 @@ Reports contain private filenames and paths. Do not commit or share them. A cust
 `--output` directory is not automatically ignored by Git. Files are created with
 owner-only permissions. No remote, upload, or publication is configured.
 
+## Node application scaffold
+
+The future local application has a minimal Node.js 24.21.0 production shell. It
+currently provides only a React placeholder and a Fastify health check; it does not
+implement requests, inspect libraries, contact providers, or modify media.
+
+```sh
+npm install
+npm run check
+npm run build
+npm start
+```
+
+The built server listens only on `127.0.0.1:3000` by default. `PORT` may select a
+different local port. Use `npm run dev:client` and `npm run dev:server` for the two
+development processes.
+
 ## Review and planning foundation (stage 2)
 
 This is an underlying capability, **not the final UI or hosting decision**. The
