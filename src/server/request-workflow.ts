@@ -106,6 +106,8 @@ export function openRequestWorkflow(options: {
     INSERT INTO subtitle_requests (
       request_id, version, library_id, video_id, video_label, language, lifecycle
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(request_id) DO NOTHING
+    RETURNING request_id, version, library_id, video_id, video_label, language, lifecycle
   `);
   const selectRequest = database.prepare(`
     SELECT request_id, version, library_id, video_id, video_label, language, lifecycle
@@ -136,7 +138,7 @@ export function openRequestWorkflow(options: {
       switch (command.type) {
         case "create-request": {
           const version = command.request.version + 1;
-          insertRequest.run(
+          const row = insertRequest.get(
             command.request.id,
             version,
             command.video.libraryId,
@@ -144,15 +146,11 @@ export function openRequestWorkflow(options: {
             command.video.label,
             command.language,
             "active",
-          );
-
-          return {
-            id: command.request.id,
-            version,
-            video: command.video,
-            language: command.language,
-            lifecycle: "active",
-          };
+          ) as RequestRow | undefined;
+          if (row === undefined) {
+            throw new RequestVersionConflictError();
+          }
+          return toRequestView(row);
         }
         case "defer-request": {
           const row = deferRequest.get(

@@ -159,3 +159,41 @@ test("retrying a deferred subtitle request makes it durably active", (context) =
     requests: [],
   });
 });
+
+test("recreating a subtitle request cannot overwrite the durable request", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
+  const databasePath = join(directory, "workflow.sqlite");
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const workflow = openRequestWorkflow({ databasePath });
+  workflow.issue({
+    type: "create-request",
+    request: { id: syntheticRequest.id, version: 0 },
+    video: syntheticRequest.video,
+    language: syntheticRequest.language,
+  });
+
+  assert.throws(
+    () =>
+      workflow.issue({
+        type: "create-request",
+        request: { id: syntheticRequest.id, version: 0 },
+        video: {
+          libraryId: "library-synthetic-other",
+          id: "video-synthetic-other",
+          label: "Synthetic fixture — Must Not Replace",
+        },
+        language: "en",
+      }),
+    RequestVersionConflictError,
+  );
+  workflow.close();
+
+  const reopened = openRequestWorkflow({ databasePath });
+  context.after(() => reopened.close());
+
+  assert.deepEqual(reopened.getRequest(syntheticRequest.id), syntheticRequest);
+  assert.deepEqual(reopened.listRequests({ lifecycle: "active" }), {
+    requests: [syntheticRequest],
+  });
+});
