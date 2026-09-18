@@ -16,6 +16,7 @@
     "lint": "eslint .",
     "start": "node dist/server/index.js",
     "test": "tsx --test test/*.test.ts",
+    "test:browser": "npm run build && playwright test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
