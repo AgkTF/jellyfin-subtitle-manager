@@ -10,10 +10,16 @@ interface RequestLists {
   deferred: unknown[];
 }
 
+const groups = ["active", "deferred", "finished"] as const;
 const groupLabels: Record<RequestGroup, string> = {
   active: "Active",
   deferred: "Deferred",
   finished: "Finished",
+};
+const groupIcons: Record<RequestGroup, string> = {
+  active: "●",
+  deferred: "Ⅱ",
+  finished: "✓",
 };
 
 function isRequestLists(value: unknown): value is RequestLists {
@@ -62,96 +68,134 @@ function RequestWorkspace() {
   };
   const selectedLabel = groupLabels[selectedGroup];
 
-  const groupButton = (group: RequestGroup, className: string) => (
-    <button
-      aria-label={`${groupLabels[group]} ${counts[group]}`}
-      aria-pressed={selectedGroup === group}
-      className={`${className} ${selectedGroup === group ? "is-selected" : ""}`}
-      key={group}
-      onClick={() => setSelectedGroup(group)}
-      type="button"
-    >
-      <span>{groupLabels[group]}</span>
-      <span className="count">{counts[group]}</span>
-    </button>
-  );
-
   return (
-    <div className="workspace-shell">
-      <aside aria-label="Workspace rail" className="icon-rail">
-        <div aria-label="Subtitle manager" className="brand-mark">
-          S
-        </div>
-        <div aria-hidden="true" className="rail-marker">
-          ◎
-        </div>
-      </aside>
-
-      <aside className="workspace-navigation">
-        <div className="brand-name">Subtitles</div>
-        <p className="navigation-label">Workspace</p>
-        <div className="primary-location" aria-current="page">
-          <span aria-hidden="true">◎</span>
-          <span>Requests</span>
-        </div>
-
-        <p className="navigation-label">Request groups</p>
-        <nav aria-label="Requests" className="request-groups">
-          {(["active", "deferred", "finished"] as const).map((group) =>
-            groupButton(group, "group-button"),
-          )}
-        </nav>
-      </aside>
-
-      <main className="request-ledger">
-        <header className="ledger-heading">
-          <div>
-            <p className="eyebrow">Request ledger</p>
-            <h1>Subtitle requests</h1>
-            <p>Review, publish, then verify each subtitle in Jellyfin.</p>
+    <div className="workspace-canvas">
+      <section aria-label="Subtitle review workspace" className="workspace-shell">
+        <aside aria-label="Workspace rail" className="icon-rail">
+          <div aria-label="Subtitle manager" className="brand-mark">
+            S
           </div>
-        </header>
-
-        <section aria-labelledby="request-group-heading" className="request-panel">
-          <div className="panel-heading">
-            <div>
-              <h2 id="request-group-heading">{selectedLabel} requests</h2>
-              <p>
-                {counts[selectedGroup]} {counts[selectedGroup] === 1 ? "request" : "requests"}
-              </p>
-            </div>
-            <div aria-label="Request groups" className="queue-tabs" role="tablist">
-              {(["active", "deferred", "finished"] as const).map((group) => (
-                <button
-                  aria-selected={selectedGroup === group}
-                  className={selectedGroup === group ? "is-selected" : ""}
-                  key={group}
-                  onClick={() => setSelectedGroup(group)}
-                  role="tab"
-                  type="button"
-                >
-                  {groupLabels[group]} {counts[group]}
-                </button>
-              ))}
-            </div>
+          <div aria-hidden="true" className="rail-button is-active" title="Requests">
+            ◎
           </div>
+          <div aria-hidden="true" className="rail-button rail-library" title="Library evidence">
+            ▤
+          </div>
+          <div aria-hidden="true" className="rail-button rail-history" title="Operation history">
+            ↺
+          </div>
+          <div aria-hidden="true" className="rail-button rail-settings" title="Settings">
+            ⚙
+          </div>
+        </aside>
 
-          {loadFailed ? (
-            <div className="load-error" role="alert">
-              Request history could not be loaded. Reload to try again.
+        <aside aria-label="Request navigation" className="workspace-navigation">
+          <header className="product-name">
+            <strong>Subtitle manager</strong>
+            <span>Local review workspace</span>
+          </header>
+
+          <span className="navigation-label">Workspace</span>
+          <nav aria-label="Workspace">
+            <div aria-current="page" className="navigation-item is-active">
+              <span className="navigation-icon" aria-hidden="true">◎</span>
+              <span>Requests</span>
+              <span className="navigation-count">{counts.active}</span>
             </div>
-          ) : (
-            <div
-              aria-label={`${selectedLabel} subtitle requests`}
-              className="empty-request-group"
-              role="region"
-            >
-              <span aria-hidden="true">—</span>
-              <p>Nothing in this request group.</p>
+            <div className="navigation-item is-unavailable">
+              <span className="navigation-icon" aria-hidden="true">▤</span>
+              <span>Library evidence</span>
             </div>
-          )}
-        </section>
-      </main>
+            <div className="navigation-item is-unavailable">
+              <span className="navigation-icon" aria-hidden="true">↺</span>
+              <span>Operation history</span>
+            </div>
+          </nav>
+
+          <span className="navigation-label">Request groups</span>
+          <nav aria-label="Requests" className="request-groups">
+            {groups.map((group) => (
+              <button
+                aria-label={`${groupLabels[group]} ${counts[group]}`}
+                aria-pressed={selectedGroup === group}
+                className={`group-button ${selectedGroup === group ? "is-active" : ""}`}
+                key={group}
+                onClick={() => setSelectedGroup(group)}
+                type="button"
+              >
+                <span className="navigation-icon" aria-hidden="true">{groupIcons[group]}</span>
+                <span>{groupLabels[group]}</span>
+                <span className="navigation-count">{counts[group]}</span>
+              </button>
+            ))}
+          </nav>
+
+          <div className="sidebar-note">
+            <strong>Local workspace</strong>
+            <br />
+            Library scans and request work start only when you choose.
+          </div>
+        </aside>
+
+        <main className="request-ledger">
+          <header className="topbar">
+            <div className="breadcrumb" aria-label="Breadcrumb">
+              Workspace <span aria-hidden="true">/</span> <strong>Requests</strong>
+            </div>
+          </header>
+
+          <div className="ledger-content">
+            <header className="ledger-heading">
+              <div>
+                <span className="eyebrow">Request ledger</span>
+                <h1>Subtitle requests</h1>
+                <p>Review, publish, then verify each subtitle in Jellyfin.</p>
+              </div>
+            </header>
+
+            <section aria-labelledby="request-group-heading" className="request-panel">
+              <header className="panel-heading">
+                <div>
+                  <h2 id="request-group-heading">{selectedLabel} requests</h2>
+                  <p>
+                    {counts[selectedGroup]} {counts[selectedGroup] === 1 ? "request" : "requests"}
+                  </p>
+                </div>
+                <div aria-label="Request groups" className="queue-tabs" role="tablist">
+                  {groups.map((group) => (
+                    <button
+                      aria-selected={selectedGroup === group}
+                      className={selectedGroup === group ? "is-active" : ""}
+                      key={group}
+                      onClick={() => setSelectedGroup(group)}
+                      role="tab"
+                      type="button"
+                    >
+                      {groupLabels[group]} · {counts[group]}
+                    </button>
+                  ))}
+                </div>
+              </header>
+
+              <div aria-label={`${selectedLabel} subtitle requests`} role="table">
+                <div className="request-table-heading" role="row">
+                  <span role="columnheader">Title and release</span>
+                  <span role="columnheader">Language</span>
+                  <span role="columnheader">State / next action</span>
+                  <span aria-hidden="true" />
+                </div>
+                {loadFailed ? (
+                  <div className="load-error" role="alert">
+                    Request history could not be loaded. Reload to try again.
+                  </div>
+                ) : (
+                  <div className="empty-request-group">Nothing in this request group.</div>
+                )}
+              </div>
+            </section>
+          </div>
+        </main>
+      </section>
     </div>
   );
 }

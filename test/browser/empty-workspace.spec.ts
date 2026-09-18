@@ -36,6 +36,23 @@ test("opens an empty request workspace without starting work", async ({ page }) 
     await expect(
       page.getByRole("heading", { level: 1, name: "Subtitle requests" }),
     ).toBeVisible();
+    await expect(page.getByText("Subtitle manager", { exact: true })).toBeVisible();
+    await expect(page.getByText("Local review workspace", { exact: true })).toBeVisible();
+    await expect(page.getByText("Workspace / Requests", { exact: true })).toBeVisible();
+
+    const requestTable = page.getByRole("table", {
+      name: "Active subtitle requests",
+    });
+    await expect(
+      requestTable.getByRole("columnheader", { name: "Title and release" }),
+    ).toBeVisible();
+    await expect(
+      requestTable.getByRole("columnheader", { name: "Language" }),
+    ).toBeVisible();
+    await expect(
+      requestTable.getByRole("columnheader", { name: "State / next action" }),
+    ).toBeVisible();
+
     const requestNavigation = page.getByRole("navigation", { name: "Requests" });
     await expect(
       requestNavigation.getByRole("button", { name: "Active 0" }),
