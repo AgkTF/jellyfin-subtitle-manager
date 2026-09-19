@@ -217,7 +217,42 @@ test("preparing an active request stores three bounded synthetic candidates and 
   assert.equal(restored?.version, 1);
 });
 
-test("existing preparations and the earlier rejection schema migrate to durable identity evidence", (context) => {
+test("preparation outcomes are distinct, explicit, and durable", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
+  const databasePath = join(directory, "workflow.sqlite");
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const workflow = openRequestWorkflow({ databasePath });
+  const cases = [
+    ["no-suitable-candidate-video", "no-suitable-candidate", "No suitable", ["defer"]],
+    ["blocked-preparation-video", "blocked", "blocked", ["defer", "retry"]],
+    ["failed-preparation-video", "failed", "failed", ["defer", "retry"]],
+  ] as const;
+  for (const [videoId, outcome, explanation, nextActions] of cases) {
+    workflow.issue({
+      type: "create-request",
+      request: { id: `${videoId}-request`, version: 0 },
+      video: { libraryId: "library-synthetic", id: videoId, label: videoId },
+      language: "ar",
+    });
+    const prepared = workflow.issue({
+      type: "prepare-request",
+      request: { id: `${videoId}-request`, version: 1 },
+    });
+    assert.equal(prepared.preparation?.outcome, outcome);
+    assert.match(prepared.preparation?.explanation ?? "", new RegExp(explanation, "i"));
+    assert.deepEqual(prepared.preparation?.nextActions, nextActions);
+    assert.equal(prepared.preparation?.candidates.length, 0);
+  }
+  workflow.close();
+  const reopened = openRequestWorkflow({ databasePath });
+  context.after(() => reopened.close());
+  for (const [videoId, outcome] of cases) {
+    assert.equal(reopened.getRequest(`${videoId}-request`)?.preparation?.outcome, outcome);
+  }
+});
+
+test("existing preparations and the earlier rejection schema migrate to durable identity evidence",  (context) => {
   const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
   const databasePath = join(directory, "workflow.sqlite");
   context.after(() => rmSync(directory, { recursive: true, force: true }));

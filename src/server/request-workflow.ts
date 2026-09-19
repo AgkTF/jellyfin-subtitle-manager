@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 
 import {
   prepareSyntheticCandidates,
+  type PreparationOutcome,
   type SubtitleCandidate,
 } from "./synthetic-preparation.js";
 
@@ -39,6 +40,9 @@ export interface PreparedCandidateView extends SubtitleCandidate {
 }
 
 export interface RequestPreparationView {
+  outcome: PreparationOutcome;
+  explanation: string;
+  nextActions: Array<"defer" | "retry">;
   candidates: PreparedCandidateView[];
   recommendedCandidateId: string | null;
 }
@@ -82,6 +86,10 @@ export type RequestCommand =
         id: string;
         version: number;
       };
+    }
+  | {
+      type: "retry-preparation";
+      request: { id: string; version: number };
     }
   | {
       type: "reject-candidate";
@@ -186,7 +194,10 @@ export function openRequestWorkflow(options: {
     CREATE TABLE IF NOT EXISTS request_preparations (
       request_id TEXT PRIMARY KEY REFERENCES subtitle_requests(request_id),
       candidates_json TEXT NOT NULL,
-      recommended_candidate_id TEXT NOT NULL
+      recommended_candidate_id TEXT,
+      outcome TEXT NOT NULL DEFAULT 'candidates-found',
+      explanation TEXT NOT NULL DEFAULT 'Prepared bounded candidates for review.',
+      next_actions_json TEXT NOT NULL DEFAULT '["defer"]'
     ) STRICT;
 
     CREATE TABLE IF NOT EXISTS candidate_rejections (
@@ -203,6 +214,14 @@ export function openRequestWorkflow(options: {
     SELECT request_id, version, lifecycle FROM subtitle_requests;
   `);
 
+  const preparationColumns = database.prepare("PRAGMA table_info(request_preparations)")
+    .all() as Array<{ name: string }>;
+  if (!preparationColumns.some((column) => column.name === "outcome")) {
+    database.exec("ALTER TABLE request_preparations ADD COLUMN outcome TEXT NOT NULL DEFAULT 'candidates-found'");
+    database.exec("ALTER TABLE request_preparations ADD COLUMN explanation TEXT NOT NULL DEFAULT 'Prepared bounded candidates for review.'");
+    database.exec("ALTER TABLE request_preparations ADD COLUMN next_actions_json TEXT NOT NULL DEFAULT '[\"defer\"]'");
+  }
+
   const rejectionColumns = database.prepare("PRAGMA table_info(candidate_rejections)")
     .all() as Array<{ name: string }>;
   const hasIdentityHash = rejectionColumns.some((column) => column.name === "candidate_identity_hash");
@@ -217,7 +236,7 @@ export function openRequestWorkflow(options: {
   const preparationRows = database.prepare(`
     SELECT
       r.request_id, r.version, r.library_id, r.video_id, r.video_label, r.language, r.lifecycle,
-      p.candidates_json
+      p.candidates_json, p.outcome, p.explanation, p.next_actions_json
     FROM request_preparations p
     JOIN subtitle_requests r ON r.request_id = p.request_id
   `).all() as PreparationMigrationRow[];
@@ -298,13 +317,19 @@ export function openRequestWorkflow(options: {
     ORDER BY version
   `);
   const selectPreparation = database.prepare(`
-    SELECT candidates_json, recommended_candidate_id
+    SELECT candidates_json, recommended_candidate_id, outcome, explanation, next_actions_json
     FROM request_preparations
     WHERE request_id = ?
   `);
+  const replacePreparation = database.prepare(`
+    UPDATE request_preparations
+    SET candidates_json = ?, recommended_candidate_id = ?, outcome = ?, explanation = ?, next_actions_json = ?
+    WHERE request_id = ?
+  `);
   const insertPreparation = database.prepare(`
-    INSERT OR IGNORE INTO request_preparations (request_id, candidates_json, recommended_candidate_id)
-    VALUES (?, ?, ?)
+    INSERT OR IGNORE INTO request_preparations (
+      request_id, candidates_json, recommended_candidate_id, outcome, explanation, next_actions_json
+    ) VALUES (?, ?, ?, ?, ?, ?)
   `);
   const selectCandidateRejections = database.prepare(`
     SELECT candidate_id, candidate_identity_hash, reason
@@ -336,7 +361,10 @@ export function openRequestWorkflow(options: {
     ) as RequestLifecycleRow[];
     const preparationRow = selectPreparation.get(requestId) as {
       candidates_json: string;
-      recommended_candidate_id: string;
+      recommended_candidate_id: string | null;
+      outcome: PreparationOutcome;
+      explanation: string;
+      next_actions_json: string;
     } | undefined;
     const preparationCandidates = preparationRow === undefined
       ? null
@@ -355,10 +383,18 @@ export function openRequestWorkflow(options: {
       rejection: rejections.get(`${candidate.id}\0${candidate.identityEvidenceHash}`) ?? null,
     })) ?? null;
     const originalRecommendation = preparationRow?.recommended_candidate_id;
+    const preparationOutcome = preparationRow?.outcome;
+    const preparationExplanation = preparationRow?.explanation;
+    const preparationNextActions = preparationRow === undefined
+      ? []
+      : JSON.parse(preparationRow.next_actions_json) as Array<"defer" | "retry">;
     const recommendationWasRejected = candidates?.find(
       (candidate) => candidate.id === originalRecommendation,
     )?.rejection != null;
     const preparation = candidates === null ? null : {
+      outcome: preparationOutcome ?? "candidates-found",
+      explanation: preparationExplanation ?? "Prepared bounded candidates for review.",
+      nextActions: preparationNextActions,
       candidates,
       recommendedCandidateId: recommendationWasRejected ? null : originalRecommendation ?? null,
     };
@@ -422,7 +458,10 @@ export function openRequestWorkflow(options: {
       }
       const existing = selectPreparation.get(request.id) as {
         candidates_json: string;
-        recommended_candidate_id: string;
+        recommended_candidate_id: string | null;
+        outcome: PreparationOutcome;
+        explanation: string;
+        next_actions_json: string;
       } | undefined;
       if (existing !== undefined) return;
       const preparation = prepareSyntheticCandidates(
@@ -433,6 +472,25 @@ export function openRequestWorkflow(options: {
         request.id,
         JSON.stringify(preparation.candidates),
         preparation.recommendedCandidateId,
+        preparation.outcome,
+        preparation.explanation,
+        JSON.stringify(preparation.nextActions),
+      );
+    },
+  );
+  const retryPreparation = database.transaction(
+    (request: { id: string; version: number }) => {
+      const row = selectRequest.get(request.id) as RequestRow | undefined;
+      if (row === undefined || row.version !== request.version || row.lifecycle !== "active") {
+        throw new RequestVersionConflictError();
+      }
+      const preparation = prepareSyntheticCandidates(
+        { libraryId: row.library_id, id: row.video_id, label: row.video_label },
+        row.language,
+      );
+      replacePreparation.run(
+        JSON.stringify(preparation.candidates), preparation.recommendedCandidateId,
+        preparation.outcome, preparation.explanation, JSON.stringify(preparation.nextActions), request.id,
       );
     },
   );
@@ -484,6 +542,9 @@ export function openRequestWorkflow(options: {
           break;
         case "prepare-request":
           prepareActiveRequest(command.request);
+          break;
+        case "retry-preparation":
+          retryPreparation(command.request);
           break;
         case "reject-candidate":
           rejectPreparedCandidate(command);

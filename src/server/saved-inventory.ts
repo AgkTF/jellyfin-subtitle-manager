@@ -32,6 +32,45 @@ const initialInventory: SavedInventory = {
       }],
     },
     {
+      id: "no-suitable-candidate",
+      file: "/synthetic/No.Suitable.Candidate.2025.mkv",
+      issues: [],
+      identities: [{
+        id: "no-suitable-candidate-2025",
+        title: "No Suitable Candidate (2025)",
+        release: "No.Suitable.Candidate.2025.SYNTHETIC",
+        association: "Synthetic fixture for a bounded search with no suitable result.",
+        english: { status: "unknown", description: "No suitable candidate evidence was retained." },
+        arabic: { status: "unknown", description: "No suitable candidate evidence was retained." },
+      }],
+    },
+    {
+      id: "blocked-preparation",
+      file: "/synthetic/Blocked.Preparation.2025.mkv",
+      issues: [],
+      identities: [{
+        id: "blocked-preparation-2025",
+        title: "Blocked Preparation (2025)",
+        release: "Blocked.Preparation.2025.SYNTHETIC",
+        association: "Synthetic fixture for preparation blocked by ambiguous evidence.",
+        english: { status: "unknown", description: "Preparation requires an explicit decision." },
+        arabic: { status: "unknown", description: "Preparation requires an explicit decision." },
+      }],
+    },
+    {
+      id: "failed-preparation",
+      file: "/synthetic/Failed.Preparation.2025.mkv",
+      issues: [],
+      identities: [{
+        id: "failed-preparation-2025",
+        title: "Failed Preparation (2025)",
+        release: "Failed.Preparation.2025.SYNTHETIC",
+        association: "Synthetic fixture for a preparation error.",
+        english: { status: "unknown", description: "Preparation failed before a candidate was produced." },
+        arabic: { status: "unknown", description: "Preparation failed before a candidate was produced." },
+      }],
+    },
+    {
       id: "harbor-signal",
       file: "/synthetic/Harbor.Signal.SYNTHETIC.mkv",
       issues: ["Saved filename year and container title disagree. Identity remains ambiguous."],
@@ -113,7 +152,9 @@ export function openSyntheticSavedInventory(
       return {
         ...inventory,
         ...(lastRefreshFailure === undefined ? {} : { lastRefreshFailure }),
-        videos: inventory.videos.filter((video) =>
+        videos: (search.length === 0
+          ? inventory.videos.filter((video) => !video.id.includes("-preparation") && video.id !== "no-suitable-candidate")
+          : inventory.videos).filter((video) =>
           [video.file, ...video.identities.flatMap((identity) => [identity.title, identity.release])]
             .some((value) => value.toLowerCase().includes(search)),
         ),

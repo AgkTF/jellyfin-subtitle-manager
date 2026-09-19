@@ -22,9 +22,14 @@ export interface SubtitleCandidate {
   identityEvidenceHash: string;
 }
 
+export type PreparationOutcome = "candidates-found" | "no-suitable-candidate" | "blocked" | "failed";
+
 export interface SyntheticPreparation {
+  outcome: PreparationOutcome;
+  explanation: string;
+  nextActions: Array<"defer" | "retry">;
   candidates: SubtitleCandidate[];
-  recommendedCandidateId: string;
+  recommendedCandidateId: string | null;
 }
 
 /**
@@ -37,6 +42,13 @@ export function prepareSyntheticCandidates(
 ): SyntheticPreparation {
   const languageName = language === "ar" ? "Arabic" : "English";
   const destination = `/synthetic/subtitles/${video.id}.${language}.srt`;
+  const scenario = video.id.includes("no-suitable-candidate")
+    ? { outcome: "no-suitable-candidate" as const, explanation: `No suitable ${languageName} subtitle candidate was found in this bounded run.`, nextActions: ["defer"] as Array<"defer" | "retry"> }
+    : video.id.includes("blocked-preparation")
+      ? { outcome: "blocked" as const, explanation: "Preparation is blocked because the saved subtitle evidence is ambiguous and requires an explicit identity or provider decision.", nextActions: ["defer", "retry"] as Array<"defer" | "retry"> }
+      : video.id.includes("failed-preparation")
+        ? { outcome: "failed" as const, explanation: "Candidate preparation failed before a usable result was produced. No candidate was downloaded.", nextActions: ["defer", "retry"] as Array<"defer" | "retry"> }
+        : { outcome: "candidates-found" as const, explanation: `Prepared bounded ${languageName} candidates for review.`, nextActions: ["defer"] as Array<"defer" | "retry"> };
   const candidates = ["primary", "alternate", "conservative"].map((variant, index) => {
     const evidence = {
       id: `${video.id}-${language}-${variant}`,
@@ -73,5 +85,10 @@ export function prepareSyntheticCandidates(
     };
   });
 
-  return { candidates, recommendedCandidateId: candidates[0].id };
+  const availableCandidates = scenario.outcome === "candidates-found" ? candidates : [];
+  return {
+    ...scenario,
+    candidates: availableCandidates,
+    recommendedCandidateId: availableCandidates[0]?.id ?? null,
+  };
 }
