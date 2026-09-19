@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import Database from "better-sqlite3";
+
 import {
+  CandidateRejectionValidationError,
   openRequestWorkflow,
   RequestVersionConflictError,
 } from "../src/server/request-workflow.js";
@@ -212,6 +215,153 @@ test("preparing an active request stores three bounded synthetic candidates and 
   const restored = reopened.getRequest(syntheticRequest.id);
   assert.deepEqual(restored?.preparation, prepared.preparation);
   assert.equal(restored?.version, 1);
+});
+
+test("existing preparations and the earlier rejection schema migrate to durable identity evidence", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
+  const databasePath = join(directory, "workflow.sqlite");
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const workflow = openRequestWorkflow({ databasePath });
+  workflow.issue({
+    type: "create-request",
+    request: { id: syntheticRequest.id, version: 0 },
+    video: syntheticRequest.video,
+    language: syntheticRequest.language,
+  });
+  workflow.issue({
+    type: "prepare-request",
+    request: { id: syntheticRequest.id, version: 1 },
+  });
+  workflow.close();
+
+  const database = new Database(databasePath);
+  const row = database.prepare("SELECT candidates_json FROM request_preparations WHERE request_id = ?")
+    .get(syntheticRequest.id) as { candidates_json: string };
+  const legacyCandidates = JSON.parse(row.candidates_json) as Array<Record<string, unknown>>;
+  for (const candidate of legacyCandidates) {
+    candidate.evidenceHash = candidate.identityEvidenceHash;
+    delete candidate.identityEvidenceHash;
+  }
+  database.prepare("UPDATE request_preparations SET candidates_json = ? WHERE request_id = ?")
+    .run(JSON.stringify(legacyCandidates), syntheticRequest.id);
+  database.exec("ALTER TABLE candidate_rejections RENAME COLUMN candidate_identity_hash TO candidate_evidence_hash");
+  database.prepare(`
+    INSERT INTO candidate_rejections (
+      request_id, library_id, video_id, candidate_id, candidate_evidence_hash, reason
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    syntheticRequest.id,
+    syntheticRequest.video.libraryId,
+    syntheticRequest.video.id,
+    legacyCandidates[0].id,
+    legacyCandidates[0].evidenceHash,
+    "Earlier rejection remains unsuitable",
+  );
+  database.close();
+
+  const reopened = openRequestWorkflow({ databasePath });
+  context.after(() => reopened.close());
+  const migrated = reopened.getRequest(syntheticRequest.id)?.preparation?.candidates[0];
+  assert.match(migrated?.identityEvidenceHash ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(migrated?.rejection?.reason, "Earlier rejection remains unsuitable");
+});
+
+test("rejecting a prepared candidate preserves its reason and leaves request lifecycle and other candidates unchanged", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
+  const databasePath = join(directory, "workflow.sqlite");
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const workflow = openRequestWorkflow({ databasePath });
+  workflow.issue({
+    type: "create-request",
+    request: { id: syntheticRequest.id, version: 0 },
+    video: syntheticRequest.video,
+    language: syntheticRequest.language,
+  });
+  const prepared = workflow.issue({
+    type: "prepare-request",
+    request: { id: syntheticRequest.id, version: 1 },
+  });
+  const candidate = prepared.preparation?.candidates[0];
+  assert.ok(candidate);
+
+  const rejected = workflow.issue({
+    type: "reject-candidate",
+    request: { id: syntheticRequest.id, version: 1 },
+    candidate: { id: candidate.id, identityEvidenceHash: candidate.identityEvidenceHash },
+    reason: "  Timing drifts after the opening scene.  ",
+  });
+
+  assert.equal(rejected.lifecycle, "active");
+  assert.equal(rejected.version, 1);
+  assert.equal(rejected.preparation?.recommendedCandidateId, null);
+  assert.deepEqual(rejected.preparation?.candidates.map((item) => item.rejection), [
+    {
+      candidateId: candidate.id,
+      identityEvidenceHash: candidate.identityEvidenceHash,
+      reason: "Timing drifts after the opening scene.",
+    },
+    null,
+    null,
+  ]);
+  workflow.close();
+
+  const reopened = openRequestWorkflow({ databasePath });
+  context.after(() => reopened.close());
+  const restored = reopened.issue({
+    type: "prepare-request",
+    request: { id: syntheticRequest.id, version: 1 },
+  });
+  assert.deepEqual(restored.preparation, rejected.preparation);
+});
+
+test("candidate rejection requires a non-empty reason and matching prepared identity evidence", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
+  const databasePath = join(directory, "workflow.sqlite");
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const workflow = openRequestWorkflow({ databasePath });
+  context.after(() => workflow.close());
+  workflow.issue({
+    type: "create-request",
+    request: { id: syntheticRequest.id, version: 0 },
+    video: syntheticRequest.video,
+    language: syntheticRequest.language,
+  });
+  const prepared = workflow.issue({
+    type: "prepare-request",
+    request: { id: syntheticRequest.id, version: 1 },
+  });
+  const candidate = prepared.preparation?.candidates[0];
+  assert.ok(candidate);
+
+  assert.throws(() => workflow.issue({
+    type: "reject-candidate",
+    request: { id: syntheticRequest.id, version: 1 },
+    candidate: { id: candidate.id, identityEvidenceHash: candidate.identityEvidenceHash },
+    reason: "   ",
+  }), CandidateRejectionValidationError);
+  assert.throws(() => workflow.issue({
+    type: "reject-candidate",
+    request: { id: syntheticRequest.id, version: 1 },
+    candidate: { id: candidate.id, identityEvidenceHash: "0".repeat(64) },
+    reason: "Wrong candidate evidence",
+  }), CandidateRejectionValidationError);
+  assert.equal(workflow.getRequest(syntheticRequest.id)?.preparation?.candidates.every(
+    (item) => item.rejection === null,
+  ), true);
+
+  workflow.issue({
+    type: "defer-request",
+    request: { id: syntheticRequest.id, version: 1 },
+  });
+  assert.throws(() => workflow.issue({
+    type: "reject-candidate",
+    request: { id: syntheticRequest.id, version: 2 },
+    candidate: { id: candidate.id, identityEvidenceHash: candidate.identityEvidenceHash },
+    reason: "Do not continue review while deferred",
+  }), RequestVersionConflictError);
 });
 
 test("a request view retains durable lifecycle history", (context) => {
