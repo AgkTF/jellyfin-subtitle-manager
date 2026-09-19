@@ -23,7 +23,7 @@ test("searches synthetic saved inventory and retains scan and subtitle evidence"
   assert.equal(inventory.videos[0].identities[0].arabic.status, "unknown");
 });
 
-test("an explicit synthetic refresh replaces the saved snapshot without creating a request", async (context) => {
+test("an explicit synthetic refresh replaces the saved snapshot without creating a subtitle request", async (context) => {
   const workflow = openRequestWorkflow({ databasePath: ":memory:" });
   const server = buildServer({ workflow });
   context.after(async () => { await server.close(); workflow.close(); });
@@ -114,6 +114,10 @@ test("a failed refresh keeps the previous saved snapshot distinguishable", async
   const retained = await server.inject({ method: "GET", url: "/api/inventory" });
   assert.equal(retained.json().scannedAt, "2026-01-15T12:00:00Z");
   assert.deepEqual(retained.json().errors, ["Synthetic scan: /synthetic/unreadable could not be listed."]);
+  assert.deepEqual(retained.json().lastRefreshFailure, {
+    error: "Synthetic refresh could not read /synthetic/offline.",
+    retainedScannedAt: "2026-01-15T12:00:00Z",
+  });
 });
 
 test("rejects untrusted Host and Origin values before exposing saved evidence", async (context) => {

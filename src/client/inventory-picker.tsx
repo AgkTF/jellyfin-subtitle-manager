@@ -49,12 +49,15 @@ function IdentityEvidence({ identity }: { identity: SavedVideoIdentity }) {
 export function InventoryPicker({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const refreshInFlight = useRef(false);
   const [search, setSearch] = useState("");
   const [submittedSearch, setSubmittedSearch] = useState({ query: "", attempt: 0 });
   const [state, setState] = useState<InventoryState>({ status: "loading" });
   const [refreshState, setRefreshState] = useState<RefreshState>({ status: "idle" });
-  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
-  const [selectedIdentityId, setSelectedIdentityId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<{ videoId: string | null; identityId: string | null }>({
+    videoId: null,
+    identityId: null,
+  });
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -69,7 +72,13 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
       .then(async (response) => {
         if (!response.ok) throw new Error("Saved inventory could not be loaded");
         const inventory = await response.json() as SavedInventory;
-        if (!controller.signal.aborted) setState({ status: "ready", inventory });
+        if (!controller.signal.aborted) {
+          setState({ status: "ready", inventory });
+          if (!refreshInFlight.current && inventory.lastRefreshFailure !== undefined) {
+            setRefreshState({ status: "failed", message: inventory.lastRefreshFailure.error,
+              retainedScannedAt: inventory.lastRefreshFailure.retainedScannedAt });
+          }
+        }
       })
       .catch(() => {
         if (!controller.signal.aborted) setState({ status: "failed" });
@@ -83,7 +92,8 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
   }
 
   async function refreshInventory() {
-    if (refreshState.status === "refreshing") return;
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
     setRefreshState({ status: "refreshing" });
     try {
       const response = await fetch("/api/inventory/refresh", { method: "POST" });
@@ -97,8 +107,7 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
         });
         return;
       }
-      setSelectedVideoId(null);
-      setSelectedIdentityId(null);
+      setSelection({ videoId: null, identityId: null });
       setState({ status: "ready", inventory: result.inventory });
       setRefreshState(result.outcome === "partial"
         ? { status: "partial", scannedAt: result.inventory.scannedAt }
@@ -108,12 +117,14 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
         status: "failed",
         message: "The synthetic refresh request could not be completed.",
       });
+    } finally {
+      refreshInFlight.current = false;
     }
   }
 
   const inventory = state.status === "ready" ? state.inventory : null;
-  const video = inventory?.videos.find((item) => item.id === selectedVideoId);
-  const identity = video?.identities.find((item) => item.id === selectedIdentityId);
+  const video = inventory?.videos.find((item) => item.id === selection.videoId);
+  const identity = video?.identities.find((item) => item.id === selection.identityId);
 
   return (
     <dialog
@@ -152,9 +163,7 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
       </p>}
       <form className="inventory-search" onSubmit={(event) => {
         event.preventDefault();
-        setSelectedVideoId(null);
-        setSelectedIdentityId(null);
-        setRefreshState({ status: "idle" });
+        setSelection({ videoId: null, identityId: null });
         setState({ status: "loading" });
         setSubmittedSearch({ query: search.trim(), attempt: submittedSearch.attempt + 1 });
       }}>
@@ -184,8 +193,10 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
             {inventory.videos.map((item) => (
               <li key={item.id}>
                 <button type="button" aria-pressed={video?.id === item.id} onClick={() => {
-                  setSelectedVideoId(item.id);
-                  setSelectedIdentityId(item.identities.length === 1 ? item.identities[0].id : null);
+                  setSelection({
+                    videoId: item.id,
+                    identityId: item.identities.length === 1 ? item.identities[0].id : null,
+                  });
                 }}>
                   <span>{item.identities.length === 1 ? `Inspect ${item.identities[0].title}`
                     : item.identities.length === 0 ? "Inspect unidentified video" : "Inspect ambiguous video"}</span>
@@ -225,8 +236,8 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
                   {video.identities.map((option) => (
                     <label key={option.id}>
                       <input type="radio" name="video-identity" value={option.id}
-                        checked={selectedIdentityId === option.id}
-                        onChange={() => setSelectedIdentityId(option.id)} />
+                        checked={selection.identityId === option.id}
+                        onChange={() => setSelection({ videoId: video.id, identityId: option.id })} />
                       <span><strong>{option.title}</strong>
                         <span className="file-identity">{option.release}</span>
                         <span>{option.association}</span>

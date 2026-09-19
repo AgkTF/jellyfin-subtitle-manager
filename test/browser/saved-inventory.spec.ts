@@ -74,7 +74,7 @@ test("supports keyboard-only inspection without focusing the underlying workspac
   await expect(opener).toBeFocused();
 });
 
-test("refreshes saved evidence only after an explicit action", async ({ page, application }) => {
+test("refreshes only after explicit action and ignores repeated clicks", async ({ page, application }) => {
   await page.goto(application.url);
   expect(application.requests).not.toContain("POST /api/inventory/refresh");
   await page.getByRole("button", { name: "Request subtitles" }).click();
@@ -85,7 +85,11 @@ test("refreshes saved evidence only after an explicit action", async ({ page, ap
   expect(application.requests).not.toContain("POST /api/inventory/refresh");
 
   const refresh = picker.getByRole("button", { name: "Refresh saved inventory" });
-  await refresh.click();
+  await refresh.evaluate((button) => {
+    if (!(button instanceof HTMLButtonElement)) throw new Error("Expected refresh button");
+    button.click();
+    button.click();
+  });
 
   await expect(picker.getByRole("button", { name: "Refreshing…" })).toBeDisabled();
   await expect(picker.getByRole("status").filter({ hasText: "Refreshing synthetic inventory…" })).toBeVisible();
@@ -112,6 +116,13 @@ test.describe("refresh outcomes", () => {
       await expect(picker.getByRole("alert")).toContainText("Previous saved evidence from 2026-01-15T12:00:00Z is still displayed and was not newly verified.");
       await expect(picker.getByText("2026-01-15T12:00:00Z", { exact: true })).toBeVisible();
       await expect(picker.getByText("Synthetic scan: /synthetic/unreadable could not be listed.")).toBeVisible();
+      await picker.getByRole("searchbox").fill("Orbit");
+      await picker.getByRole("button", { name: "Search", exact: true }).click();
+      await expect(picker.getByRole("alert")).toContainText("was not newly verified");
+      await picker.getByRole("button", { name: "Close picker" }).click();
+      await page.getByRole("button", { name: "Request subtitles" }).click();
+      await expect(page.getByRole("dialog", { name: "Inspect saved inventory" }).getByRole("alert"))
+        .toContainText("was not newly verified");
       expect(application.requests.filter((request) => request === "POST /api/inventory/refresh")).toHaveLength(1);
     });
   });

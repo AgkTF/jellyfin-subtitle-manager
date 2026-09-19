@@ -1,5 +1,6 @@
 import type {
   InventoryRefreshAttempt,
+  InventoryRefreshFailure,
   InventoryRefreshResult,
   SavedInventory,
 } from "./inventory-contract.js";
@@ -93,6 +94,7 @@ export function openSyntheticSavedInventory(
   options: SyntheticSavedInventoryOptions = {},
 ): SavedInventoryAdapter {
   let inventory = initialInventory;
+  let lastRefreshFailure: InventoryRefreshFailure | undefined;
   const performRefresh = options.refresh ?? (async () => ({
     outcome: "success" as const,
     inventory: refreshedInventory,
@@ -103,6 +105,7 @@ export function openSyntheticSavedInventory(
       const search = query.trim().toLowerCase();
       return {
         ...inventory,
+        ...(lastRefreshFailure === undefined ? {} : { lastRefreshFailure }),
         videos: inventory.videos.filter((video) =>
           [video.file, ...video.identities.flatMap((identity) => [identity.title, identity.release])]
             .some((value) => value.toLowerCase().includes(search)),
@@ -112,9 +115,14 @@ export function openSyntheticSavedInventory(
     async refresh() {
       const result = await performRefresh();
       if (result.outcome === "failed") {
-        return { ...result, retainedScannedAt: inventory.scannedAt };
+        lastRefreshFailure = {
+          error: result.error,
+          retainedScannedAt: inventory.scannedAt,
+        };
+        return { outcome: result.outcome, ...lastRefreshFailure };
       }
       inventory = result.inventory;
+      lastRefreshFailure = undefined;
       return result;
     },
   };

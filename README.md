@@ -43,7 +43,7 @@ and reports successful, partial, or failed evidence without overlapping attempts
 Neither path has a scanner, provider, filesystem or workflow dependency. Displayed
 `/synthetic/` paths are evidence labels, never opened. Page load, picker open,
 search, and selection do not refresh inventory, contact providers, or mutate
-requests.
+subtitle requests.
 
 ```sh
 npm install
