@@ -38,6 +38,12 @@ function languageLabel(language: RequestSummary["language"]): string {
   return language === "en" ? "English" : "Arabic";
 }
 
+async function loadRequest(requestId: string): Promise<RequestView> {
+  const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}`);
+  if (!response.ok) throw new Error(`Request detail failed with ${response.status}`);
+  return response.json() as Promise<RequestView>;
+}
+
 function RequestWorkspace() {
   const [selectedGroup, setSelectedGroup] = useState<RequestGroup>("active");
   const [requestLists, setRequestLists] = useState<RequestLists>({
@@ -101,9 +107,7 @@ function RequestWorkspace() {
     setDetailFailed(false);
     setTransitionConflict(false);
     try {
-      const response = await fetch(`/api/requests/${encodeURIComponent(request.id)}`);
-      if (!response.ok) throw new Error(`Request detail failed with ${response.status}`);
-      setSelectedRequest(await response.json() as RequestView);
+      setSelectedRequest(await loadRequest(request.id));
     } catch {
       setSelectedRequest(null);
       setDetailFailed(true);
@@ -115,9 +119,7 @@ function RequestWorkspace() {
     setRecoveryInProgress(true);
     setDetailFailed(false);
     try {
-      const response = await fetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}`);
-      if (!response.ok) throw new Error(`Request detail failed with ${response.status}`);
-      const current = await response.json() as RequestView;
+      const current = await loadRequest(selectedRequest.id);
       setSelectedRequest(current);
       updateRequest(current);
       setTransitionConflict(false);

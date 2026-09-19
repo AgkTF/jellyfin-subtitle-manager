@@ -34,28 +34,22 @@ test("a stale subtitle-request tab recovers the current durable lifecycle", asyn
   await expect(loadCurrentState).toBeVisible();
 
   const requestId = application.workflow.listRequests({ lifecycle: "deferred" }).requests[0].id;
-  expect(application.workflow.getRequest(requestId)).toMatchObject({
+  const durableDeferredState = {
     version: 2,
     lifecycle: "deferred",
     lifecycleHistory: [
       { version: 1, lifecycle: "active" },
       { version: 2, lifecycle: "deferred" },
     ],
-  });
+  } as const;
+  expect(application.workflow.getRequest(requestId)).toMatchObject(durableDeferredState);
 
   await loadCurrentState.dblclick();
   await expect(stalePage.getByRole("heading", { name: "Deferred requests" })).toBeVisible();
   await expect(staleDetail.getByText("Deferred · version 2")).toBeVisible();
   await expect(staleDetail.getByText("Active · version 1")).toBeVisible();
   await expect(conflict).toBeHidden();
-  expect(application.workflow.getRequest(requestId)).toMatchObject({
-    version: 2,
-    lifecycle: "deferred",
-    lifecycleHistory: [
-      { version: 1, lifecycle: "active" },
-      { version: 2, lifecycle: "deferred" },
-    ],
-  });
+  expect(application.workflow.getRequest(requestId)).toMatchObject(durableDeferredState);
 });
 
 test("defers and explicitly retries a subtitle request through its detail view", async ({ page, application }) => {
