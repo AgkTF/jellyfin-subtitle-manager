@@ -402,6 +402,24 @@ h1 {
   background: var(--panel-subtle);
 }
 
+.request-conflict {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 12px 18px;
+  border: 1px solid #e5b8b4;
+  border-radius: 8px;
+  color: #943d38;
+  background: #fff0ee;
+  font-size: 11px;
+}
+
+.request-conflict .secondary-button {
+  flex: none;
+}
+
 .request-detail {
   margin-top: 18px;
   padding: 18px;
