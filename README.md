@@ -28,11 +28,18 @@ Reports contain private filenames and paths. Do not commit or share them. A cust
 `--output` directory is not automatically ignored by Git. Files are created with
 owner-only permissions. No remote, upload, or publication is configured.
 
-## Node application scaffold
+## Local browser application
 
-The future local application has a minimal Node.js 24.21.0 production shell. It
-currently provides only a React placeholder and a Fastify health check; it does not
-implement requests, inspect libraries, contact providers, or modify media.
+The Node.js 24.21.0 application provides a React request workspace and a read-only
+synthetic saved-inventory picker. Choose **Request subtitles** to search by title,
+release or filename and inspect saved scan errors and English/Arabic evidence.
+Ambiguous identities require an explicit choice; missing evidence stays unknown.
+Request creation from the picker is not available yet.
+
+`GET /api/inventory?q=...` reads only the labelled, in-code synthetic snapshot in
+`src/server/saved-inventory.ts`. It has no scanner, provider, filesystem or workflow
+dependency. Displayed `/synthetic/` paths are evidence labels, never opened.
+Page load and search do not scan libraries, contact providers or mutate requests.
 
 ```sh
 npm install
@@ -43,7 +50,9 @@ npm start
 
 The built server listens only on `127.0.0.1:3000` by default. `PORT` may select a
 different local port. Use `npm run dev:client` and `npm run dev:server` for the two
-development processes.
+development processes. Run `npm run test:browser` for real loopback browser tests
+with temporary SQLite state, including desktop and 390px picker coverage. Chromium
+must be available (system Chromium or `npx playwright install chromium`).
 
 ## Review and planning foundation (stage 2)
 

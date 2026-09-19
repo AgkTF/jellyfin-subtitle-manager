@@ -1,5 +1,7 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+
+import { InventoryPicker } from "./inventory-picker.js";
 
 import "./styles.css";
 
@@ -37,6 +39,8 @@ function RequestWorkspace() {
     deferred: [],
   });
   const [loadFailed, setLoadFailed] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerOpener = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -151,6 +155,9 @@ function RequestWorkspace() {
                 <h1>Subtitle requests</h1>
                 <p>Review, publish, then verify each subtitle in Jellyfin.</p>
               </div>
+              <button className="primary-button" ref={pickerOpener} type="button" onClick={() => setPickerOpen(true)}>
+                Request subtitles
+              </button>
             </header>
 
             <section aria-labelledby="request-group-heading" className="request-panel">
@@ -196,6 +203,10 @@ function RequestWorkspace() {
           </div>
         </main>
       </section>
+      {pickerOpen && <InventoryPicker onClose={() => {
+        setPickerOpen(false);
+        pickerOpener.current?.focus();
+      }} />}
     </div>
   );
 }
