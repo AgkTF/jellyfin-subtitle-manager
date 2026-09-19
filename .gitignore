@@ -25,3 +25,5 @@ __pycache__/
 /coverage/
 /dist/
 /build/
+/playwright-report/
+/test-results/

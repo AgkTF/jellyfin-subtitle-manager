@@ -1,0 +1,258 @@
+import Database from "better-sqlite3";
+
+export type SubtitleLanguage = "en" | "ar";
+
+export interface VideoIdentity {
+  libraryId: string;
+  id: string;
+  label: string;
+}
+
+export type RequestLifecycle = "active" | "deferred";
+
+export interface RequestSummary {
+  id: string;
+  version: number;
+  video: VideoIdentity;
+  language: SubtitleLanguage;
+  lifecycle: RequestLifecycle;
+}
+
+export interface RequestLifecycleEntry {
+  version: number;
+  lifecycle: RequestLifecycle;
+}
+
+export interface RequestView extends RequestSummary {
+  lifecycleHistory: RequestLifecycleEntry[];
+}
+
+export interface RequestListView {
+  requests: RequestSummary[];
+}
+
+export type RequestCommand =
+  | {
+      type: "create-request";
+      request: {
+        id: string;
+        version: 0;
+      };
+      video: VideoIdentity;
+      language: SubtitleLanguage;
+    }
+  | {
+      type: "defer-request";
+      request: {
+        id: string;
+        version: number;
+      };
+    }
+  | {
+      type: "retry-request";
+      request: {
+        id: string;
+        version: number;
+      };
+    };
+
+export interface RequestWorkflow {
+  issue(command: RequestCommand): RequestView;
+  getRequest(requestId: string): RequestView | undefined;
+  listRequests(query: { lifecycle: RequestLifecycle }): RequestListView;
+  close(): void;
+}
+
+export class RequestVersionConflictError extends Error {
+  constructor() {
+    super("Request is not at the expected lifecycle and version");
+    this.name = "RequestVersionConflictError";
+  }
+}
+
+interface RequestRow {
+  request_id: string;
+  version: number;
+  library_id: string;
+  video_id: string;
+  video_label: string;
+  language: SubtitleLanguage;
+  lifecycle: RequestLifecycle;
+}
+
+interface RequestLifecycleRow {
+  version: number;
+  lifecycle: RequestLifecycle;
+}
+
+function toRequestSummary(row: RequestRow): RequestSummary {
+  return {
+    id: row.request_id,
+    version: row.version,
+    video: {
+      libraryId: row.library_id,
+      id: row.video_id,
+      label: row.video_label,
+    },
+    language: row.language,
+    lifecycle: row.lifecycle,
+  };
+}
+
+export function openRequestWorkflow(options: {
+  databasePath: string;
+}): RequestWorkflow {
+  const database = new Database(options.databasePath);
+  database.pragma("foreign_keys = ON");
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS subtitle_requests (
+      request_id TEXT PRIMARY KEY,
+      version INTEGER NOT NULL,
+      library_id TEXT NOT NULL,
+      video_id TEXT NOT NULL,
+      video_label TEXT NOT NULL,
+      language TEXT NOT NULL,
+      lifecycle TEXT NOT NULL
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS request_lifecycle_history (
+      request_id TEXT NOT NULL REFERENCES subtitle_requests(request_id),
+      version INTEGER NOT NULL,
+      lifecycle TEXT NOT NULL,
+      PRIMARY KEY (request_id, version)
+    ) STRICT;
+
+    INSERT OR IGNORE INTO request_lifecycle_history (request_id, version, lifecycle)
+    SELECT request_id, version, lifecycle FROM subtitle_requests;
+  `);
+
+  const insertRequest = database.prepare(`
+    INSERT INTO subtitle_requests (
+      request_id, version, library_id, video_id, video_label, language, lifecycle
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(request_id) DO NOTHING
+    RETURNING request_id, version, library_id, video_id, video_label, language, lifecycle
+  `);
+  const selectRequest = database.prepare(`
+    SELECT request_id, version, library_id, video_id, video_label, language, lifecycle
+    FROM subtitle_requests
+    WHERE request_id = ?
+  `);
+  const deferRequest = database.prepare(`
+    UPDATE subtitle_requests
+    SET version = version + 1, lifecycle = 'deferred'
+    WHERE request_id = ? AND version = ? AND lifecycle = 'active'
+    RETURNING request_id, version, library_id, video_id, video_label, language, lifecycle
+  `);
+  const retryRequest = database.prepare(`
+    UPDATE subtitle_requests
+    SET version = version + 1, lifecycle = 'active'
+    WHERE request_id = ? AND version = ? AND lifecycle = 'deferred'
+    RETURNING request_id, version, library_id, video_id, video_label, language, lifecycle
+  `);
+  const selectRequestsByLifecycle = database.prepare(`
+    SELECT request_id, version, library_id, video_id, video_label, language, lifecycle
+    FROM subtitle_requests
+    WHERE lifecycle = ?
+    ORDER BY request_id
+  `);
+  const insertLifecycleHistory = database.prepare(`
+    INSERT INTO request_lifecycle_history (request_id, version, lifecycle)
+    VALUES (?, ?, ?)
+  `);
+  const selectLifecycleHistory = database.prepare(`
+    SELECT version, lifecycle
+    FROM request_lifecycle_history
+    WHERE request_id = ?
+    ORDER BY version
+  `);
+
+  const readRequest = (requestId: string): RequestView | undefined => {
+    const row = selectRequest.get(requestId) as RequestRow | undefined;
+    if (row === undefined) {
+      return undefined;
+    }
+    const lifecycleHistory = selectLifecycleHistory.all(
+      requestId,
+    ) as RequestLifecycleRow[];
+    return { ...toRequestSummary(row), lifecycleHistory };
+  };
+
+  const createRequest = database.transaction(
+    (command: Extract<RequestCommand, { type: "create-request" }>) => {
+      const version = command.request.version + 1;
+      const row = insertRequest.get(
+        command.request.id,
+        version,
+        command.video.libraryId,
+        command.video.id,
+        command.video.label,
+        command.language,
+        "active",
+      ) as RequestRow | undefined;
+      if (row === undefined) {
+        throw new RequestVersionConflictError();
+      }
+      insertLifecycleHistory.run(row.request_id, row.version, row.lifecycle);
+    },
+  );
+  const deferActiveRequest = database.transaction(
+    (request: { id: string; version: number }) => {
+      const row = deferRequest.get(request.id, request.version) as
+        | RequestRow
+        | undefined;
+      if (row === undefined) {
+        throw new RequestVersionConflictError();
+      }
+      insertLifecycleHistory.run(row.request_id, row.version, row.lifecycle);
+    },
+  );
+  const retryDeferredRequest = database.transaction(
+    (request: { id: string; version: number }) => {
+      const row = retryRequest.get(request.id, request.version) as
+        | RequestRow
+        | undefined;
+      if (row === undefined) {
+        throw new RequestVersionConflictError();
+      }
+      insertLifecycleHistory.run(row.request_id, row.version, row.lifecycle);
+    },
+  );
+
+  const workflow: RequestWorkflow = {
+    issue(command) {
+      switch (command.type) {
+        case "create-request":
+          createRequest(command);
+          break;
+        case "defer-request":
+          deferActiveRequest(command.request);
+          break;
+        case "retry-request":
+          retryDeferredRequest(command.request);
+          break;
+      }
+      const view = readRequest(command.request.id);
+      if (view === undefined) {
+        throw new Error("Applied request command did not produce a request view");
+      }
+      return view;
+    },
+
+    getRequest(requestId) {
+      return readRequest(requestId);
+    },
+
+    listRequests(query) {
+      const rows = selectRequestsByLifecycle.all(query.lifecycle) as RequestRow[];
+      return { requests: rows.map(toRequestSummary) };
+    },
+
+    close() {
+      database.close();
+    },
+  };
+
+  return workflow;
+}
