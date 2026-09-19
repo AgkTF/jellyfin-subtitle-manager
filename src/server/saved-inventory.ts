@@ -1,8 +1,12 @@
-import type { SavedInventory } from "./inventory-contract.js";
+import type {
+  InventoryRefreshAttempt,
+  InventoryRefreshResult,
+  SavedInventory,
+} from "./inventory-contract.js";
 
 // Deliberately synthetic saved evidence. This read path has no scanner, provider,
 // filesystem, or workflow dependency; it never inspects the displayed paths.
-const inventory: SavedInventory = {
+const initialInventory: SavedInventory = {
   source: "synthetic",
   scannedAt: "2026-01-15T12:00:00Z",
   errors: ["Synthetic scan: /synthetic/unreadable could not be listed."],
@@ -70,13 +74,48 @@ const inventory: SavedInventory = {
   ],
 };
 
-export function searchSavedInventory(query: string): SavedInventory {
-  const search = query.trim().toLowerCase();
+const refreshedInventory: SavedInventory = {
+  ...initialInventory,
+  scannedAt: "2026-02-16T08:30:00Z",
+  errors: [],
+};
+
+export interface SavedInventoryAdapter {
+  search(query: string): SavedInventory;
+  refresh(): Promise<InventoryRefreshResult>;
+}
+
+interface SyntheticSavedInventoryOptions {
+  refresh?: () => Promise<InventoryRefreshAttempt>;
+}
+
+export function openSyntheticSavedInventory(
+  options: SyntheticSavedInventoryOptions = {},
+): SavedInventoryAdapter {
+  let inventory = initialInventory;
+  const performRefresh = options.refresh ?? (async () => ({
+    outcome: "success" as const,
+    inventory: refreshedInventory,
+  }));
+
   return {
-    ...inventory,
-    videos: inventory.videos.filter((video) =>
-      [video.file, ...video.identities.flatMap((identity) => [identity.title, identity.release])]
-        .some((value) => value.toLowerCase().includes(search)),
-    ),
+    search(query) {
+      const search = query.trim().toLowerCase();
+      return {
+        ...inventory,
+        videos: inventory.videos.filter((video) =>
+          [video.file, ...video.identities.flatMap((identity) => [identity.title, identity.release])]
+            .some((value) => value.toLowerCase().includes(search)),
+        ),
+      };
+    },
+    async refresh() {
+      const result = await performRefresh();
+      if (result.outcome === "failed") {
+        return { ...result, retainedScannedAt: inventory.scannedAt };
+      }
+      inventory = result.inventory;
+      return result;
+    },
   };
 }

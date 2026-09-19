@@ -30,16 +30,20 @@ owner-only permissions. No remote, upload, or publication is configured.
 
 ## Local browser application
 
-The Node.js 24.21.0 application provides a React request workspace and a read-only
-synthetic saved-inventory picker. Choose **Request subtitles** to search by title,
-release or filename and inspect saved scan errors and English/Arabic evidence.
-Ambiguous identities require an explicit choice; missing evidence stays unknown.
-Request creation from the picker is not available yet.
+The Node.js 24.21.0 application provides a React request workspace and a synthetic
+saved-inventory picker. Choose **Request subtitles** to search by title, release or
+filename and inspect saved scan errors and English/Arabic evidence. Ambiguous
+identities require an explicit choice; missing evidence stays unknown. Request
+creation from the picker is not available yet.
 
 `GET /api/inventory?q=...` reads only the labelled, in-code synthetic snapshot in
-`src/server/saved-inventory.ts`. It has no scanner, provider, filesystem or workflow
-dependency. Displayed `/synthetic/` paths are evidence labels, never opened.
-Page load and search do not scan libraries, contact providers or mutate requests.
+`src/server/saved-inventory.ts`. **Refresh saved inventory** explicitly invokes
+`POST /api/inventory/refresh`; it replaces only that in-memory synthetic snapshot
+and reports successful, partial, or failed evidence without overlapping attempts.
+Neither path has a scanner, provider, filesystem or workflow dependency. Displayed
+`/synthetic/` paths are evidence labels, never opened. Page load, picker open,
+search, and selection do not refresh inventory, contact providers, or mutate
+requests.
 
 ```sh
 npm install

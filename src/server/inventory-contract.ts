@@ -25,3 +25,11 @@ export interface SavedInventory {
   errors: string[];
   videos: SavedVideo[];
 }
+
+export type InventoryRefreshAttempt =
+  | { outcome: "success" | "partial"; inventory: SavedInventory }
+  | { outcome: "failed"; error: string };
+
+export type InventoryRefreshResult =
+  | { outcome: "success" | "partial"; inventory: SavedInventory }
+  | { outcome: "failed"; error: string; retainedScannedAt: string };

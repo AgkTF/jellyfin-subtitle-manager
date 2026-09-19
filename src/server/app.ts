@@ -2,12 +2,16 @@ import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import type { RequestWorkflow } from "./request-workflow.js";
-import { searchSavedInventory } from "./saved-inventory.js";
+import {
+  openSyntheticSavedInventory,
+  type SavedInventoryAdapter,
+} from "./saved-inventory.js";
 
 interface ServerOptions {
   clientRoot?: string;
   logger?: boolean;
   workflow?: RequestWorkflow;
+  inventory?: SavedInventoryAdapter;
 }
 
 export function buildServer(options: ServerOptions = {}): FastifyInstance {
@@ -25,6 +29,8 @@ export function buildServer(options: ServerOptions = {}): FastifyInstance {
 
   server.get("/health", async () => ({ status: "ok" }));
 
+  const inventory = options.inventory ?? openSyntheticSavedInventory();
+
   server.get<{ Querystring: { q?: string } }>("/api/inventory", {
     schema: {
       querystring: {
@@ -33,7 +39,20 @@ export function buildServer(options: ServerOptions = {}): FastifyInstance {
         additionalProperties: false,
       },
     },
-  }, async (request) => searchSavedInventory(request.query.q ?? ""));
+  }, async (request) => inventory.search(request.query.q ?? ""));
+
+  let inventoryRefreshInProgress = false;
+  server.post("/api/inventory/refresh", async (_request, reply) => {
+    if (inventoryRefreshInProgress) {
+      return reply.code(409).send({ error: "Inventory refresh already in progress" });
+    }
+    inventoryRefreshInProgress = true;
+    try {
+      return await inventory.refresh();
+    } finally {
+      inventoryRefreshInProgress = false;
+    }
+  });
 
   const workflow = options.workflow;
   if (workflow !== undefined) {

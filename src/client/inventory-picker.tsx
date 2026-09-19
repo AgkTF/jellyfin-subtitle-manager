@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { SavedInventory, SavedVideoIdentity, SubtitleEvidence } from "../server/inventory-contract.js";
+import type {
+  InventoryRefreshResult,
+  SavedInventory,
+  SavedVideoIdentity,
+  SubtitleEvidence,
+} from "../server/inventory-contract.js";
 
 import "./inventory-picker.css";
 
@@ -8,6 +13,11 @@ type InventoryState =
   | { status: "loading" }
   | { status: "failed" }
   | { status: "ready"; inventory: SavedInventory };
+
+type RefreshState =
+  | { status: "idle" | "refreshing" | "success" }
+  | { status: "partial"; scannedAt: string }
+  | { status: "failed"; message: string; retainedScannedAt?: string };
 
 function LanguageEvidence({ language, evidence }: { language: string; evidence: SubtitleEvidence }) {
   return (
@@ -42,6 +52,7 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
   const [search, setSearch] = useState("");
   const [submittedSearch, setSubmittedSearch] = useState({ query: "", attempt: 0 });
   const [state, setState] = useState<InventoryState>({ status: "loading" });
+  const [refreshState, setRefreshState] = useState<RefreshState>({ status: "idle" });
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
   const [selectedIdentityId, setSelectedIdentityId] = useState<string | null>(null);
 
@@ -71,6 +82,35 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
     onClose();
   }
 
+  async function refreshInventory() {
+    if (refreshState.status === "refreshing") return;
+    setRefreshState({ status: "refreshing" });
+    try {
+      const response = await fetch("/api/inventory/refresh", { method: "POST" });
+      if (!response.ok) throw new Error(`Refresh failed with ${response.status}`);
+      const result = await response.json() as InventoryRefreshResult;
+      if (result.outcome === "failed") {
+        setRefreshState({
+          status: "failed",
+          message: result.error,
+          retainedScannedAt: result.retainedScannedAt,
+        });
+        return;
+      }
+      setSelectedVideoId(null);
+      setSelectedIdentityId(null);
+      setState({ status: "ready", inventory: result.inventory });
+      setRefreshState(result.outcome === "partial"
+        ? { status: "partial", scannedAt: result.inventory.scannedAt }
+        : { status: "success" });
+    } catch {
+      setRefreshState({
+        status: "failed",
+        message: "The synthetic refresh request could not be completed.",
+      });
+    }
+  }
+
   const inventory = state.status === "ready" ? state.inventory : null;
   const video = inventory?.videos.find((item) => item.id === selectedVideoId);
   const identity = video?.identities.find((item) => item.id === selectedIdentityId);
@@ -90,13 +130,31 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
         </div>
         <button className="secondary-button" onClick={closePicker} type="button">Close picker</button>
       </header>
-      <p id="inventory-picker-description" className="picker-intro">
-        Search saved evidence, then inspect a video. No live scan or provider access.
-      </p>
+      <div className="refresh-toolbar">
+        <p id="inventory-picker-description" className="picker-intro">
+          Search saved evidence, then inspect a video. Refresh runs only when you choose and remains synthetic.
+        </p>
+        <button className="secondary-button" disabled={refreshState.status === "refreshing"}
+          onClick={() => { void refreshInventory(); }} type="button">
+          {refreshState.status === "refreshing" ? "Refreshing…" : "Refresh saved inventory"}
+        </button>
+      </div>
+      {refreshState.status === "refreshing" && <p role="status">Refreshing synthetic inventory…</p>}
+      {refreshState.status === "success" && <p className="refresh-result" role="status">
+        Refresh complete. Saved evidence was replaced.
+      </p>}
+      {refreshState.status === "partial" && <p className="load-error" role="alert">
+        Refresh completed with errors. The saved scan at {refreshState.scannedAt} is partial; review its retained scan errors.
+      </p>}
+      {refreshState.status === "failed" && <p className="load-error" role="alert">
+        Refresh failed: {refreshState.message} Previous saved evidence
+        {refreshState.retainedScannedAt === undefined ? "" : ` from ${refreshState.retainedScannedAt}`} is still displayed and was not newly verified.
+      </p>}
       <form className="inventory-search" onSubmit={(event) => {
         event.preventDefault();
         setSelectedVideoId(null);
         setSelectedIdentityId(null);
+        setRefreshState({ status: "idle" });
         setState({ status: "loading" });
         setSubmittedSearch({ query: search.trim(), attempt: submittedSearch.attempt + 1 });
       }}>
