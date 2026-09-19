@@ -217,7 +217,7 @@ test("preparing an active request stores three bounded synthetic candidates and 
   assert.equal(restored?.version, 1);
 });
 
-test("existing preparations gain durable identity evidence before rejection", (context) => {
+test("existing preparations and the earlier rejection schema migrate to durable identity evidence", (context) => {
   const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
   const databasePath = join(directory, "workflow.sqlite");
   context.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -239,23 +239,32 @@ test("existing preparations gain durable identity evidence before rejection", (c
   const row = database.prepare("SELECT candidates_json FROM request_preparations WHERE request_id = ?")
     .get(syntheticRequest.id) as { candidates_json: string };
   const legacyCandidates = JSON.parse(row.candidates_json) as Array<Record<string, unknown>>;
-  for (const candidate of legacyCandidates) delete candidate.identityEvidenceHash;
+  for (const candidate of legacyCandidates) {
+    candidate.evidenceHash = candidate.identityEvidenceHash;
+    delete candidate.identityEvidenceHash;
+  }
   database.prepare("UPDATE request_preparations SET candidates_json = ? WHERE request_id = ?")
     .run(JSON.stringify(legacyCandidates), syntheticRequest.id);
+  database.exec("ALTER TABLE candidate_rejections RENAME COLUMN candidate_identity_hash TO candidate_evidence_hash");
+  database.prepare(`
+    INSERT INTO candidate_rejections (
+      request_id, library_id, video_id, candidate_id, candidate_evidence_hash, reason
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    syntheticRequest.id,
+    syntheticRequest.video.libraryId,
+    syntheticRequest.video.id,
+    legacyCandidates[0].id,
+    legacyCandidates[0].evidenceHash,
+    "Earlier rejection remains unsuitable",
+  );
   database.close();
 
   const reopened = openRequestWorkflow({ databasePath });
   context.after(() => reopened.close());
   const migrated = reopened.getRequest(syntheticRequest.id)?.preparation?.candidates[0];
   assert.match(migrated?.identityEvidenceHash ?? "", /^[a-f0-9]{64}$/);
-  assert.ok(migrated);
-  const rejected = reopened.issue({
-    type: "reject-candidate",
-    request: { id: syntheticRequest.id, version: 1 },
-    candidate: { id: migrated.id, identityEvidenceHash: migrated.identityEvidenceHash },
-    reason: "Legacy preparation is unsuitable",
-  });
-  assert.equal(rejected.preparation?.candidates[0].rejection?.reason, "Legacy preparation is unsuitable");
+  assert.equal(migrated?.rejection?.reason, "Earlier rejection remains unsuitable");
 });
 
 test("rejecting a prepared candidate preserves its reason and leaves request lifecycle and other candidates unchanged", (context) => {

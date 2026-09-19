@@ -203,6 +203,17 @@ export function openRequestWorkflow(options: {
     SELECT request_id, version, lifecycle FROM subtitle_requests;
   `);
 
+  const rejectionColumns = database.prepare("PRAGMA table_info(candidate_rejections)")
+    .all() as Array<{ name: string }>;
+  const hasIdentityHash = rejectionColumns.some((column) => column.name === "candidate_identity_hash");
+  const hasEarlierEvidenceHash = rejectionColumns.some((column) => column.name === "candidate_evidence_hash");
+  if (!hasIdentityHash && hasEarlierEvidenceHash) {
+    database.exec(`
+      ALTER TABLE candidate_rejections
+      RENAME COLUMN candidate_evidence_hash TO candidate_identity_hash
+    `);
+  }
+
   const preparationRows = database.prepare(`
     SELECT
       r.request_id, r.version, r.library_id, r.video_id, r.video_label, r.language, r.lifecycle,
@@ -216,7 +227,10 @@ export function openRequestWorkflow(options: {
   database.transaction(() => {
     for (const row of preparationRows) {
       const stored = JSON.parse(row.candidates_json) as Array<
-        Omit<SubtitleCandidate, "identityEvidenceHash"> & { identityEvidenceHash?: string }
+        Omit<SubtitleCandidate, "identityEvidenceHash"> & {
+          identityEvidenceHash?: string;
+          evidenceHash?: string;
+        }
       >;
       if (stored.every((candidate) => candidate.identityEvidenceHash !== undefined)) continue;
       const generated = prepareSyntheticCandidates(
@@ -225,11 +239,14 @@ export function openRequestWorkflow(options: {
       ).candidates;
       const migrated = stored.map((candidate) => {
         if (candidate.identityEvidenceHash !== undefined) return candidate;
-        const identityEvidenceHash = generated.find((item) => item.id === candidate.id)?.identityEvidenceHash;
+        const { evidenceHash, ...candidateEvidence } = candidate;
+        const identityEvidenceHash = evidenceHash ?? generated.find(
+          (item) => item.id === candidate.id,
+        )?.identityEvidenceHash;
         if (identityEvidenceHash === undefined) {
           throw new Error(`Prepared candidate ${candidate.id} cannot be migrated to identity evidence`);
         }
-        return { ...candidate, identityEvidenceHash };
+        return { ...candidateEvidence, identityEvidenceHash };
       });
       updatePreparationCandidates.run(JSON.stringify(migrated), row.request_id);
     }
