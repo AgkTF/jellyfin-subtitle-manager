@@ -123,6 +123,9 @@ export function openRequestWorkflow(options: {
       PRIMARY KEY (request_id, version)
     ) STRICT;
 
+    CREATE UNIQUE INDEX IF NOT EXISTS subtitle_requests_video_language
+    ON subtitle_requests (library_id, video_id, language);
+
     INSERT OR IGNORE INTO request_lifecycle_history (request_id, version, lifecycle)
     SELECT request_id, version, lifecycle FROM subtitle_requests;
   `);
@@ -131,13 +134,18 @@ export function openRequestWorkflow(options: {
     INSERT INTO subtitle_requests (
       request_id, version, library_id, video_id, video_label, language, lifecycle
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(request_id) DO NOTHING
+    ON CONFLICT DO NOTHING
     RETURNING request_id, version, library_id, video_id, video_label, language, lifecycle
   `);
   const selectRequest = database.prepare(`
     SELECT request_id, version, library_id, video_id, video_label, language, lifecycle
     FROM subtitle_requests
     WHERE request_id = ?
+  `);
+  const selectRequestByVideoLanguage = database.prepare(`
+    SELECT request_id, version, library_id, video_id, video_label, language, lifecycle
+    FROM subtitle_requests
+    WHERE library_id = ? AND video_id = ? AND language = ?
   `);
   const deferRequest = database.prepare(`
     UPDATE subtitle_requests
@@ -180,7 +188,7 @@ export function openRequestWorkflow(options: {
   };
 
   const createRequest = database.transaction(
-    (command: Extract<RequestCommand, { type: "create-request" }>) => {
+    (command: Extract<RequestCommand, { type: "create-request" }>): string => {
       const version = command.request.version + 1;
       const row = insertRequest.get(
         command.request.id,
@@ -192,9 +200,18 @@ export function openRequestWorkflow(options: {
         "active",
       ) as RequestRow | undefined;
       if (row === undefined) {
+        const existing = selectRequestByVideoLanguage.get(
+          command.video.libraryId,
+          command.video.id,
+          command.language,
+        ) as RequestRow | undefined;
+        if (existing !== undefined) {
+          return existing.request_id;
+        }
         throw new RequestVersionConflictError();
       }
       insertLifecycleHistory.run(row.request_id, row.version, row.lifecycle);
+      return row.request_id;
     },
   );
   const deferActiveRequest = database.transaction(
@@ -222,9 +239,10 @@ export function openRequestWorkflow(options: {
 
   const workflow: RequestWorkflow = {
     issue(command) {
+      let requestId = command.request.id;
       switch (command.type) {
         case "create-request":
-          createRequest(command);
+          requestId = createRequest(command);
           break;
         case "defer-request":
           deferActiveRequest(command.request);
@@ -233,7 +251,7 @@ export function openRequestWorkflow(options: {
           retryDeferredRequest(command.request);
           break;
       }
-      const view = readRequest(command.request.id);
+      const view = readRequest(requestId);
       if (view === undefined) {
         throw new Error("Applied request command did not produce a request view");
       }

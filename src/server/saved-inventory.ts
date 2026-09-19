@@ -81,8 +81,15 @@ const refreshedInventory: SavedInventory = {
   errors: [],
 };
 
+export interface SavedVideoSelection {
+  libraryId: string;
+  id: string;
+  label: string;
+}
+
 export interface SavedInventoryAdapter {
   search(query: string): SavedInventory;
+  resolveIdentity(videoId: string, identityId: string): SavedVideoSelection | undefined;
   refresh(): Promise<InventoryRefreshResult>;
 }
 
@@ -110,6 +117,17 @@ export function openSyntheticSavedInventory(
           [video.file, ...video.identities.flatMap((identity) => [identity.title, identity.release])]
             .some((value) => value.toLowerCase().includes(search)),
         ),
+      };
+    },
+    resolveIdentity(videoId, identityId) {
+      const video = inventory.videos.find((item) => item.id === videoId);
+      if (video === undefined || video.identities.length !== 1 || video.identities[0].id !== identityId) {
+        return undefined;
+      }
+      return {
+        libraryId: inventory.source,
+        id: identityId,
+        label: video.identities[0].title,
       };
     },
     async refresh() {

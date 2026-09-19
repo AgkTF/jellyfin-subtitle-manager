@@ -214,6 +214,40 @@ test("a request view retains durable lifecycle history", (context) => {
   });
 });
 
+test("repeated creation for one video and language keeps one lifecycle history", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
+  const databasePath = join(directory, "workflow.sqlite");
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const workflow = openRequestWorkflow({ databasePath });
+  const first = workflow.issue({
+    type: "create-request",
+    request: { id: "request-first", version: 0 },
+    video: syntheticRequest.video,
+    language: syntheticRequest.language,
+  });
+  const repeated = workflow.issue({
+    type: "create-request",
+    request: { id: "request-second", version: 0 },
+    video: syntheticRequest.video,
+    language: syntheticRequest.language,
+  });
+
+  assert.deepEqual(repeated, first);
+  const expectedRequest = { ...syntheticRequest, id: "request-first" };
+  assert.deepEqual(workflow.listRequests({ lifecycle: "active" }), {
+    requests: [expectedRequest],
+  });
+  workflow.close();
+
+  const reopened = openRequestWorkflow({ databasePath });
+  context.after(() => reopened.close());
+  assert.deepEqual(reopened.getRequest("request-first"), {
+    ...expectedRequest,
+    lifecycleHistory: [{ version: 1, lifecycle: "active" }],
+  });
+});
+
 test("recreating a subtitle request cannot overwrite the durable request", (context) => {
   const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
   const databasePath = join(directory, "workflow.sqlite");
