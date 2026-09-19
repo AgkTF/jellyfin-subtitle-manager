@@ -49,8 +49,14 @@ npm start
 ```
 
 The built server listens only on `127.0.0.1:3000` by default. `PORT` may select a
-different local port. Use `npm run dev:client` and `npm run dev:server` for the two
-development processes. Run `npm run test:browser` for real loopback browser tests
+different local port. For development, run `npm run dev:server` and
+`npm run dev:client` in separate terminals, then open Vite's printed URL (normally
+`http://127.0.0.1:5173`). Vite proxies `/api` to the loopback Fastify server on port
+3000; when using a custom API `PORT`, set the same value for **both** processes.
+The proxy preserves API errors rather than returning the frontend HTML page, and
+preserves the original Host/Origin headers for Fastify's existing validation.
+
+Run `npm run test:browser` for real loopback browser tests
 with temporary SQLite state, including desktop and 390px picker coverage. Chromium
 must be available (system Chromium or `npx playwright install chromium`).
 
