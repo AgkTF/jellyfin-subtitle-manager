@@ -240,10 +240,38 @@
   color: var(--muted);
 }
 
+.request-language {
+  display: flex;
+  gap: 14px;
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.request-language legend {
+  padding: 0 4px;
+  font-weight: 700;
+}
+
+.request-language label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
 .picker-footer {
   margin-top: 16px;
   border-top: 1px solid var(--border);
   padding-top: 12px;
+}
+
+.picker-footer .load-error {
+  flex: 1 0 100%;
+  margin: 0;
+  padding: 8px;
+  text-align: left;
 }
 
 @media (max-width: 760px) {

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 
@@ -12,6 +14,12 @@ interface ServerOptions {
   logger?: boolean;
   workflow?: RequestWorkflow;
   inventory?: SavedInventoryAdapter;
+}
+
+interface CreateRequestBody {
+  videoId: string;
+  identityId: string;
+  language: "en" | "ar";
 }
 
 export function buildServer(options: ServerOptions = {}): FastifyInstance {
@@ -60,6 +68,33 @@ export function buildServer(options: ServerOptions = {}): FastifyInstance {
       active: workflow.listRequests({ lifecycle: "active" }).requests,
       deferred: workflow.listRequests({ lifecycle: "deferred" }).requests,
     }));
+
+    server.post<{ Body: CreateRequestBody }>("/api/requests", {
+      schema: {
+        body: {
+          type: "object",
+          required: ["videoId", "identityId", "language"],
+          properties: {
+            videoId: { type: "string", minLength: 1, maxLength: 200 },
+            identityId: { type: "string", minLength: 1, maxLength: 200 },
+            language: { type: "string", enum: ["en", "ar"] },
+          },
+          additionalProperties: false,
+        },
+      },
+    }, async (request, reply) => {
+      const video = inventory.resolveIdentity(request.body.videoId, request.body.identityId);
+      if (video === undefined) {
+        return reply.code(422).send({ error: "Select one unambiguous saved video identity first" });
+      }
+      const created = workflow.issue({
+        type: "create-request",
+        request: { id: randomUUID(), version: 0 },
+        video,
+        language: request.body.language,
+      });
+      return reply.code(201).send(created);
+    });
   }
 
   if (options.clientRoot !== undefined) {

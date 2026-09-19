@@ -138,6 +138,58 @@ test("rejects untrusted Host and Origin values before exposing saved evidence", 
   assert.equal(response.statusCode, 200);
 });
 
+test("creates one request for an explicitly selected unambiguous identity and language", async (context) => {
+  const workflow = openRequestWorkflow({ databasePath: ":memory:" });
+  const server = buildServer({ workflow });
+  context.after(async () => { await server.close(); workflow.close(); });
+
+  const create = () => server.inject({
+    method: "POST",
+    url: "/api/requests",
+    payload: {
+      videoId: "quiet-orbit",
+      identityId: "quiet-orbit-2025",
+      language: "ar",
+    },
+  });
+  const first = await create();
+  assert.equal(first.statusCode, 201);
+  const firstBody = first.json();
+  assert.match(firstBody.id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(firstBody, {
+    id: firstBody.id,
+    version: 1,
+    video: {
+      libraryId: "synthetic",
+      id: "quiet-orbit-2025",
+      label: "Quiet Orbit (2025)",
+    },
+    language: "ar",
+    lifecycle: "active",
+    lifecycleHistory: [{ version: 1, lifecycle: "active" }],
+  });
+
+  const repeated = await create();
+  assert.equal(repeated.statusCode, 201);
+  assert.deepEqual(repeated.json(), firstBody);
+  assert.equal(workflow.listRequests({ lifecycle: "active" }).requests.length, 1);
+
+  const ambiguous = await server.inject({
+    method: "POST",
+    url: "/api/requests",
+    payload: { videoId: "harbor-signal", identityId: "harbor-signal-2024", language: "en" },
+  });
+  assert.equal(ambiguous.statusCode, 422);
+  assert.deepEqual(ambiguous.json(), { error: "Select one unambiguous saved video identity first" });
+
+  const invalidLanguage = await server.inject({
+    method: "POST",
+    url: "/api/requests",
+    payload: { videoId: "quiet-orbit", identityId: "quiet-orbit-2025", language: "fr" },
+  });
+  assert.equal(invalidLanguage.statusCode, 400);
+});
+
 test("saved-inventory searches preserve existing requests and never expose a mutation operation", async (context) => {
   const workflow = openRequestWorkflow({ databasePath: ":memory:" });
   workflow.issue({

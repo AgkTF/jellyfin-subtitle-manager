@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import type { RequestSummary, SubtitleLanguage } from "../server/request-workflow.js";
 import type {
   InventoryRefreshResult,
   SavedInventory,
@@ -18,6 +19,10 @@ type RefreshState =
   | { status: "idle" | "refreshing" | "success" }
   | { status: "partial"; scannedAt: string }
   | { status: "failed"; message: string; retainedScannedAt?: string };
+
+type CreateState =
+  | { status: "idle" | "creating" }
+  | { status: "failed"; message: string };
 
 function LanguageEvidence({ language, evidence }: { language: string; evidence: SubtitleEvidence }) {
   return (
@@ -46,14 +51,20 @@ function IdentityEvidence({ identity }: { identity: SavedVideoIdentity }) {
   );
 }
 
-export function InventoryPicker({ onClose }: { onClose: () => void }) {
+export function InventoryPicker({ onClose, onCreated }: {
+  onClose: () => void;
+  onCreated: (request: RequestSummary) => void;
+}) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const refreshInFlight = useRef(false);
+  const createInFlight = useRef(false);
   const [search, setSearch] = useState("");
   const [submittedSearch, setSubmittedSearch] = useState({ query: "", attempt: 0 });
   const [state, setState] = useState<InventoryState>({ status: "loading" });
   const [refreshState, setRefreshState] = useState<RefreshState>({ status: "idle" });
+  const [createState, setCreateState] = useState<CreateState>({ status: "idle" });
+  const [language, setLanguage] = useState<SubtitleLanguage | null>(null);
   const [selection, setSelection] = useState<{ videoId: string | null; identityId: string | null }>({
     videoId: null,
     identityId: null,
@@ -108,6 +119,7 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
         return;
       }
       setSelection({ videoId: null, identityId: null });
+      setLanguage(null);
       setState({ status: "ready", inventory: result.inventory });
       setRefreshState(result.outcome === "partial"
         ? { status: "partial", scannedAt: result.inventory.scannedAt }
@@ -125,6 +137,34 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
   const inventory = state.status === "ready" ? state.inventory : null;
   const video = inventory?.videos.find((item) => item.id === selection.videoId);
   const identity = video?.identities.find((item) => item.id === selection.identityId);
+
+  async function createRequest() {
+    if (createInFlight.current || video === undefined || video.identities.length !== 1
+      || identity === undefined || language === null) return;
+    createInFlight.current = true;
+    setCreateState({ status: "creating" });
+    try {
+      const response = await fetch("/api/requests", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ videoId: video.id, identityId: identity.id, language }),
+      });
+      const body = await response.json() as { error?: string } & Partial<RequestSummary>;
+      if (!response.ok || body.id === undefined || body.video === undefined
+        || body.language === undefined || body.lifecycle === undefined || body.version === undefined) {
+        throw new Error(body.error ?? `Request creation failed with ${response.status}`);
+      }
+      onCreated(body as RequestSummary);
+      closePicker();
+    } catch (error) {
+      setCreateState({
+        status: "failed",
+        message: error instanceof Error ? error.message : "The subtitle request could not be created.",
+      });
+    } finally {
+      createInFlight.current = false;
+    }
+  }
 
   return (
     <dialog
@@ -164,6 +204,7 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
       <form className="inventory-search" onSubmit={(event) => {
         event.preventDefault();
         setSelection({ videoId: null, identityId: null });
+        setLanguage(null);
         setState({ status: "loading" });
         setSubmittedSearch({ query: search.trim(), attempt: submittedSearch.attempt + 1 });
       }}>
@@ -197,6 +238,8 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
                     videoId: item.id,
                     identityId: item.identities.length === 1 ? item.identities[0].id : null,
                   });
+                  setLanguage(null);
+                  setCreateState({ status: "idle" });
                 }}>
                   <span>{item.identities.length === 1 ? `Inspect ${item.identities[0].title}`
                     : item.identities.length === 0 ? "Inspect unidentified video" : "Inspect ambiguous video"}</span>
@@ -237,7 +280,11 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
                     <label key={option.id}>
                       <input type="radio" name="video-identity" value={option.id}
                         checked={selection.identityId === option.id}
-                        onChange={() => setSelection({ videoId: video.id, identityId: option.id })} />
+                        onChange={() => {
+                          setSelection({ videoId: video.id, identityId: option.id });
+                          setLanguage(null);
+                          setCreateState({ status: "idle" });
+                        }} />
                       <span><strong>{option.title}</strong>
                         <span className="file-identity">{option.release}</span>
                         <span>{option.association}</span>
@@ -247,9 +294,33 @@ export function InventoryPicker({ onClose }: { onClose: () => void }) {
                 </fieldset>
               )}
               {identity !== undefined && <IdentityEvidence identity={identity} />}
+              {video.identities.length === 1 && identity !== undefined && (
+                <fieldset className="request-language">
+                  <legend>Request language</legend>
+                  <label>
+                    <input type="radio" name="request-language" value="en"
+                      checked={language === "en"} onChange={() => setLanguage("en")} />
+                    English
+                  </label>
+                  <label>
+                    <input type="radio" name="request-language" value="ar"
+                      checked={language === "ar"} onChange={() => setLanguage("ar")} />
+                    Arabic
+                  </label>
+                </fieldset>
+              )}
               <footer className="picker-footer">
-                <p>Inspection only. Creating requests is not available in this step.</p>
-                <button className="primary-button" type="button" disabled>Create request</button>
+                <p>{video.identities.length !== 1
+                  ? "Creating a request requires one unambiguous saved video identity."
+                  : language === null
+                    ? "Choose English or Arabic to create this request."
+                    : "Creation records the request only; it does not prepare or publish a subtitle."}</p>
+                {createState.status === "failed" && <p className="load-error" role="alert">{createState.message}</p>}
+                <button className="primary-button" onClick={() => { void createRequest(); }} type="button"
+                  disabled={video.identities.length !== 1 || identity === undefined || language === null
+                    || createState.status === "creating"}>
+                  {createState.status === "creating" ? "Creating…" : "Create request"}
+                </button>
               </footer>
             </section>
           )}

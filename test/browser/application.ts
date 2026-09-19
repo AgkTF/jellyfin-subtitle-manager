@@ -20,13 +20,15 @@ interface Application {
   requests: string[];
   server: FastifyInstance;
   workflow: RequestWorkflow;
+  restart(): Promise<void>;
 }
 
 export const test = base.extend<{ application: Application; refreshScenario: RefreshScenario }>({
   refreshScenario: [{ outcome: "success", delayMs: 100 }, { option: true }],
   application: async ({ refreshScenario }, use) => {
     const directory = await mkdtemp(path.join(tmpdir(), "subtitle-manager-"));
-    const workflow = openRequestWorkflow({ databasePath: path.join(directory, "workflow.sqlite") });
+    const databasePath = path.join(directory, "workflow.sqlite");
+    let workflow = openRequestWorkflow({ databasePath });
     const previous = openSyntheticSavedInventory().search("");
     const refresh = async (): Promise<InventoryRefreshAttempt> => {
       if (refreshScenario.delayMs !== undefined) {
@@ -52,16 +54,33 @@ export const test = base.extend<{ application: Application; refreshScenario: Ref
       };
     };
     const inventory = openSyntheticSavedInventory({ refresh });
-    const server = buildServer({ clientRoot: path.resolve("dist/client"), inventory, workflow });
     const requests: string[] = [];
+    let server = buildServer({ clientRoot: path.resolve("dist/client"), inventory, workflow });
     server.addHook("onRequest", async (request) => {
       requests.push(`${request.method} ${request.url.split("?")[0]}`);
     });
+    await server.listen({ host: "127.0.0.1", port: 0 });
+    const address = server.server.address();
+    if (address === null || typeof address === "string") throw new Error("Expected loopback TCP address");
+    const port = address.port;
+    const application: Application = {
+      url: `http://127.0.0.1:${port}`,
+      requests,
+      get server() { return server; },
+      get workflow() { return workflow; },
+      async restart() {
+        await server.close();
+        workflow.close();
+        workflow = openRequestWorkflow({ databasePath });
+        server = buildServer({ clientRoot: path.resolve("dist/client"), inventory, workflow });
+        server.addHook("onRequest", async (request) => {
+          requests.push(`${request.method} ${request.url.split("?")[0]}`);
+        });
+        await server.listen({ host: "127.0.0.1", port });
+      },
+    };
     try {
-      await server.listen({ host: "127.0.0.1", port: 0 });
-      const address = server.server.address();
-      if (address === null || typeof address === "string") throw new Error("Expected loopback TCP address");
-      await use({ url: `http://127.0.0.1:${address.port}`, requests, server, workflow });
+      await use(application);
     } finally {
       await server.close();
       workflow.close();

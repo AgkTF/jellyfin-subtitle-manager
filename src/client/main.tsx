@@ -1,6 +1,8 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
+import type { RequestSummary } from "../server/request-workflow.js";
+
 import { InventoryPicker } from "./inventory-picker.js";
 
 import "./styles.css";
@@ -8,8 +10,8 @@ import "./styles.css";
 type RequestGroup = "active" | "deferred" | "finished";
 
 interface RequestLists {
-  active: unknown[];
-  deferred: unknown[];
+  active: RequestSummary[];
+  deferred: RequestSummary[];
 }
 
 const groups = ["active", "deferred", "finished"] as const;
@@ -30,6 +32,10 @@ function isRequestLists(value: unknown): value is RequestLists {
   }
   const lists = value as Partial<RequestLists>;
   return Array.isArray(lists.active) && Array.isArray(lists.deferred);
+}
+
+function languageLabel(language: RequestSummary["language"]): string {
+  return language === "en" ? "English" : "Arabic";
 }
 
 function RequestWorkspace() {
@@ -71,6 +77,20 @@ function RequestWorkspace() {
     finished: 0,
   };
   const selectedLabel = groupLabels[selectedGroup];
+  const selectedRequests = selectedGroup === "active" ? requestLists.active
+    : selectedGroup === "deferred" ? requestLists.deferred : [];
+
+  function handleRequestCreated(request: RequestSummary) {
+    setRequestLists((current) => ({
+      active: request.lifecycle === "active"
+        ? [...current.active.filter((item) => item.id !== request.id), request]
+        : current.active.filter((item) => item.id !== request.id),
+      deferred: request.lifecycle === "deferred"
+        ? [...current.deferred.filter((item) => item.id !== request.id), request]
+        : current.deferred.filter((item) => item.id !== request.id),
+    }));
+    setSelectedGroup(request.lifecycle);
+  }
 
   return (
     <div className="workspace-canvas">
@@ -195,15 +215,30 @@ function RequestWorkspace() {
                   <div className="load-error" role="alert">
                     Request history could not be loaded. Reload to try again.
                   </div>
-                ) : (
+                ) : selectedRequests.length === 0 ? (
                   <div className="empty-request-group">Nothing in this request group.</div>
+                ) : (
+                  selectedRequests.map((request) => (
+                    <div className="request-row" key={request.id} role="row">
+                      <div role="cell">
+                        <strong>{request.video.label}</strong>
+                        <span className="request-video-id">{request.video.id}</span>
+                      </div>
+                      <div role="cell">{languageLabel(request.language)}</div>
+                      <div role="cell">
+                        <span className="request-state">{groupLabels[request.lifecycle]}</span>
+                        <span className="request-state-detail">Lifecycle v{request.version}</span>
+                      </div>
+                      <div aria-hidden="true" role="cell">›</div>
+                    </div>
+                  ))
                 )}
               </div>
             </section>
           </div>
         </main>
       </section>
-      {pickerOpen && <InventoryPicker onClose={() => {
+      {pickerOpen && <InventoryPicker onCreated={handleRequestCreated} onClose={() => {
         setPickerOpen(false);
         pickerOpener.current?.focus();
       }} />}
