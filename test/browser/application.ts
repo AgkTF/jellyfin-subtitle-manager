@@ -6,7 +6,14 @@ import { test as base } from "@playwright/test";
 import type { FastifyInstance } from "fastify";
 
 import { buildServer } from "../../src/server/app.js";
+import type { InventoryRefreshAttempt } from "../../src/server/inventory-contract.js";
 import { openRequestWorkflow, type RequestWorkflow } from "../../src/server/request-workflow.js";
+import { openSyntheticSavedInventory } from "../../src/server/saved-inventory.js";
+
+export interface RefreshScenario {
+  outcome: "success" | "partial" | "failed";
+  delayMs?: number;
+}
 
 interface Application {
   url: string;
@@ -15,13 +22,37 @@ interface Application {
   workflow: RequestWorkflow;
 }
 
-export const test = base.extend<{ application: Application }>({
-  // No browser fixture is needed to start the real application.
-  // eslint-disable-next-line no-empty-pattern
-  application: async ({}, use) => {
+export const test = base.extend<{ application: Application; refreshScenario: RefreshScenario }>({
+  refreshScenario: [{ outcome: "success", delayMs: 100 }, { option: true }],
+  application: async ({ refreshScenario }, use) => {
     const directory = await mkdtemp(path.join(tmpdir(), "subtitle-manager-"));
     const workflow = openRequestWorkflow({ databasePath: path.join(directory, "workflow.sqlite") });
-    const server = buildServer({ clientRoot: path.resolve("dist/client"), workflow });
+    const previous = openSyntheticSavedInventory().search("");
+    const refresh = async (): Promise<InventoryRefreshAttempt> => {
+      if (refreshScenario.delayMs !== undefined) {
+        await new Promise((resolve) => setTimeout(resolve, refreshScenario.delayMs));
+      }
+      if (refreshScenario.outcome === "failed") {
+        return { outcome: "failed", error: "Synthetic refresh could not read /synthetic/offline." };
+      }
+      return {
+        outcome: refreshScenario.outcome,
+        inventory: {
+          ...previous,
+          scannedAt: refreshScenario.outcome === "partial"
+            ? "2026-02-16T09:00:00Z"
+            : "2026-02-16T08:30:00Z",
+          errors: refreshScenario.outcome === "partial"
+            ? ["Synthetic partial refresh: /synthetic/cloud-archive could not be probed; its previous evidence was not carried forward."]
+            : [],
+          videos: refreshScenario.outcome === "partial"
+            ? previous.videos.filter((video) => video.id !== "cloud-archive")
+            : previous.videos,
+        },
+      };
+    };
+    const inventory = openSyntheticSavedInventory({ refresh });
+    const server = buildServer({ clientRoot: path.resolve("dist/client"), inventory, workflow });
     const requests: string[] = [];
     server.addHook("onRequest", async (request) => {
       requests.push(`${request.method} ${request.url.split("?")[0]}`);

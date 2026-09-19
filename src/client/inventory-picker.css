@@ -18,7 +18,8 @@
   background: var(--accent);
 }
 
-.primary-button:disabled {
+.primary-button:disabled,
+.secondary-button:disabled {
   border-color: var(--border);
   color: var(--muted);
   background: var(--tab-background);
@@ -66,6 +67,23 @@
 .picker-intro,
 .picker-footer p {
   color: var(--muted);
+}
+
+.refresh-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 12px 0;
+}
+
+.refresh-toolbar .picker-intro {
+  margin: 0;
+}
+
+.refresh-result {
+  color: var(--accent);
+  font-weight: 650;
 }
 
 .inventory-search label {
@@ -252,7 +270,8 @@
     grid-template-columns: 1fr;
   }
 
-  .picker-footer {
+  .picker-footer,
+  .refresh-toolbar {
     align-items: stretch;
     flex-direction: column;
     gap: 6px;

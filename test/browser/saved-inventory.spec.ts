@@ -25,7 +25,8 @@ const test = base.extend<{ readOnlyJourney: void }>({
       expect(response.json()).toEqual({ active: [], deferred: [] });
       expect(requests.every((request) =>
         request === "GET /" || request === "GET /api/requests" ||
-        request === "GET /api/inventory" || request.startsWith("GET /assets/") ||
+        request === "GET /api/inventory" || request === "POST /api/inventory/refresh" ||
+        request.startsWith("GET /assets/") ||
         request === "GET /favicon.ico",
       )).toBe(true);
     } finally {
@@ -71,6 +72,80 @@ test("supports keyboard-only inspection without focusing the underlying workspac
   }
   await page.keyboard.press("Escape");
   await expect(opener).toBeFocused();
+});
+
+test("refreshes only after explicit action and ignores repeated clicks", async ({ page, application }) => {
+  await page.goto(application.url);
+  expect(application.requests).not.toContain("POST /api/inventory/refresh");
+  await page.getByRole("button", { name: "Request subtitles" }).click();
+  const picker = page.getByRole("dialog", { name: "Inspect saved inventory" });
+  await picker.getByRole("searchbox").fill("Orbit");
+  await picker.getByRole("button", { name: "Search", exact: true }).click();
+  await picker.getByRole("button", { name: "Inspect Quiet Orbit (2025)" }).click();
+  expect(application.requests).not.toContain("POST /api/inventory/refresh");
+
+  const refresh = picker.getByRole("button", { name: "Refresh saved inventory" });
+  await refresh.evaluate((button) => {
+    if (!(button instanceof HTMLButtonElement)) throw new Error("Expected refresh button");
+    button.click();
+    button.click();
+  });
+
+  await expect(picker.getByRole("button", { name: "Refreshing…" })).toBeDisabled();
+  await expect(picker.getByRole("status").filter({ hasText: "Refreshing synthetic inventory…" })).toBeVisible();
+  await expect(picker.getByText("Refresh complete. Saved evidence was replaced.")).toBeVisible();
+  await expect(picker.getByText("2026-02-16T08:30:00Z", { exact: true })).toBeVisible();
+  await expect(picker.getByText("Retained scan errors (0)")).toBeVisible();
+  await expect(picker.getByRole("region", { name: "Selected video" })).toHaveCount(0);
+  expect(application.requests.filter((request) => request === "POST /api/inventory/refresh")).toHaveLength(1);
+});
+
+test.describe("refresh outcomes", () => {
+  test.describe("failed synthetic refresh", () => {
+    test.use({ refreshScenario: { outcome: "failed", delayMs: 50 } });
+
+    test("keeps the previous saved evidence visibly stale after failure", async ({ page, application }) => {
+      await page.goto(application.url);
+      await page.getByRole("button", { name: "Request subtitles" }).click();
+      const picker = page.getByRole("dialog", { name: "Inspect saved inventory" });
+      await expect(picker.getByText("2026-01-15T12:00:00Z", { exact: true })).toBeVisible();
+
+      await picker.getByRole("button", { name: "Refresh saved inventory" }).click();
+
+      await expect(picker.getByRole("alert")).toContainText("Refresh failed: Synthetic refresh could not read /synthetic/offline.");
+      await expect(picker.getByRole("alert")).toContainText("Previous saved evidence from 2026-01-15T12:00:00Z is still displayed and was not newly verified.");
+      await expect(picker.getByText("2026-01-15T12:00:00Z", { exact: true })).toBeVisible();
+      await expect(picker.getByText("Synthetic scan: /synthetic/unreadable could not be listed.")).toBeVisible();
+      await picker.getByRole("searchbox").fill("Orbit");
+      await picker.getByRole("button", { name: "Search", exact: true }).click();
+      await expect(picker.getByRole("alert")).toContainText("was not newly verified");
+      await picker.getByRole("button", { name: "Close picker" }).click();
+      await page.getByRole("button", { name: "Request subtitles" }).click();
+      await expect(page.getByRole("dialog", { name: "Inspect saved inventory" }).getByRole("alert"))
+        .toContainText("was not newly verified");
+      expect(application.requests.filter((request) => request === "POST /api/inventory/refresh")).toHaveLength(1);
+    });
+  });
+
+  test.describe("partial synthetic refresh", () => {
+    test.use({ refreshScenario: { outcome: "partial", delayMs: 50 } });
+
+    test("labels the replacement snapshot partial and shows its errors", async ({ page, application }) => {
+      await page.goto(application.url);
+      await page.getByRole("button", { name: "Request subtitles" }).click();
+      const picker = page.getByRole("dialog", { name: "Inspect saved inventory" });
+
+      await picker.getByRole("button", { name: "Refresh saved inventory" }).click();
+
+      await expect(picker.getByRole("alert")).toContainText("Refresh completed with errors. The saved scan at 2026-02-16T09:00:00Z is partial");
+      await expect(picker.getByText("2026-02-16T09:00:00Z", { exact: true })).toBeVisible();
+      await expect(picker.getByText(/Synthetic partial refresh: \/synthetic\/cloud-archive could not be probed/)).toBeVisible();
+      await picker.getByRole("searchbox").fill("Cloud.Archive");
+      await picker.getByRole("button", { name: "Search", exact: true }).click();
+      await expect(picker.getByText("No saved videos match. Try another title, release or file.")).toBeVisible();
+      expect(application.requests.filter((request) => request === "POST /api/inventory/refresh")).toHaveLength(1);
+    });
+  });
 });
 
 test("shows empty results and recovers from a failed inventory read", async ({ page, application }) => {

@@ -19,9 +19,28 @@ export interface SavedVideo {
   identities: SavedVideoIdentity[];
 }
 
+export interface InventoryRefreshFailure {
+  error: string;
+  retainedScannedAt: string;
+}
+
 export interface SavedInventory {
   source: "synthetic";
   scannedAt: string;
   errors: string[];
   videos: SavedVideo[];
+  lastRefreshFailure?: InventoryRefreshFailure;
 }
+
+type CompletedInventoryRefresh = {
+  outcome: "success" | "partial";
+  inventory: SavedInventory;
+};
+
+export type InventoryRefreshAttempt =
+  | CompletedInventoryRefresh
+  | { outcome: "failed"; error: string };
+
+export type InventoryRefreshResult =
+  | CompletedInventoryRefresh
+  | ({ outcome: "failed" } & InventoryRefreshFailure);
