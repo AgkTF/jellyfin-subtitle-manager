@@ -167,6 +167,7 @@ test("creates one request for an explicitly selected unambiguous identity and la
     language: "ar",
     lifecycle: "active",
     lifecycleHistory: [{ version: 1, lifecycle: "active" }],
+    preparation: null,
   });
 
   const repeated = await create();

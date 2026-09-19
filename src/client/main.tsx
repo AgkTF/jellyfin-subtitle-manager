@@ -56,6 +56,7 @@ function RequestWorkspace() {
   const [detailFailed, setDetailFailed] = useState(false);
   const [transitionConflict, setTransitionConflict] = useState(false);
   const [transitionInProgress, setTransitionInProgress] = useState(false);
+  const [preparationInProgress, setPreparationInProgress] = useState(false);
   const [recoveryInProgress, setRecoveryInProgress] = useState(false);
   const pickerOpener = useRef<HTMLButtonElement>(null);
 
@@ -127,6 +128,29 @@ function RequestWorkspace() {
       setDetailFailed(true);
     } finally {
       setRecoveryInProgress(false);
+    }
+  }
+
+  async function prepareRequest() {
+    if (selectedRequest === null || selectedRequest.lifecycle !== "active" || preparationInProgress) return;
+    setPreparationInProgress(true);
+    setDetailFailed(false);
+    try {
+      const response = await fetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/prepare`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: selectedRequest.version }),
+      });
+      if (response.status === 409) {
+        setTransitionConflict(true);
+        return;
+      }
+      if (!response.ok) throw new Error(`Candidate preparation failed with ${response.status}`);
+      setSelectedRequest(await response.json() as RequestView);
+    } catch {
+      setDetailFailed(true);
+    } finally {
+      setPreparationInProgress(false);
     }
   }
 
@@ -326,6 +350,34 @@ function RequestWorkspace() {
                     ))}
                   </ol>
                 </section>
+                {selectedRequest.lifecycle === "active" && selectedRequest.preparation === null && (
+                  <button className="primary-button" disabled={preparationInProgress || transitionConflict}
+                    onClick={() => { void prepareRequest(); }} type="button">
+                    {preparationInProgress ? "Preparing…" : "Prepare synthetic candidates"}
+                  </button>
+                )}
+                {selectedRequest.preparation !== null && (
+                  <section aria-label="Prepared subtitle candidates" className="candidate-preparation">
+                    <h3>Prepared synthetic candidates</h3>
+                    <p>Provider and network activity: none. These candidates are synthetic fixtures for review only.</p>
+                    <p><strong>Recommendation:</strong> {selectedRequest.preparation.candidates.find((candidate) =>
+                      candidate.id === selectedRequest.preparation?.recommendedCandidateId)?.recommendationReason}</p>
+                    <ol>
+                      {selectedRequest.preparation.candidates.map((candidate) => (
+                        <li key={candidate.id}>
+                          <strong>{candidate.label}{candidate.id === selectedRequest.preparation?.recommendedCandidateId ? " · Recommended" : " · Alternative"}</strong>
+                          <dl>
+                            <dt>File / release association</dt><dd>{candidate.file} · {candidate.release}</dd>
+                            <dt>Language / type</dt><dd>{languageLabel(candidate.language)} · {candidate.subtitleType}</dd>
+                            <dt>Provenance / authorship</dt><dd>{candidate.provenance}; {candidate.language === "ar" ? "Arabic authorship remains unknown" : "authorship remains unknown"}</dd>
+                            <dt>Timing evidence</dt><dd>{candidate.timing.status}: {candidate.timing.evidence} {candidate.timing.limits}</dd>
+                            <dt>Proposed destination</dt><dd>{candidate.destination} · publication is not enabled</dd>
+                          </dl>
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                )}
                 <button className="secondary-button" disabled={transitionInProgress || transitionConflict}
                   onClick={() => { void transitionRequest(selectedRequest.lifecycle === "active" ? "defer" : "retry"); }} type="button">
                   {transitionInProgress ? "Updating…" : selectedRequest.lifecycle === "active" ? "Defer request" : "Retry request"}

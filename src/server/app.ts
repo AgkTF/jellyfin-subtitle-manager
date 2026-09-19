@@ -112,6 +112,29 @@ export function buildServer(options: ServerOptions = {}): FastifyInstance {
       return view === undefined ? reply.code(404).send({ error: "Subtitle request was not found" }) : view;
     });
 
+    server.post<{ Params: RequestParams; Body: TransitionRequestBody }>("/api/requests/:requestId/prepare", {
+      schema: {
+        body: {
+          type: "object",
+          required: ["version"],
+          properties: { version: { type: "integer", minimum: 1 } },
+          additionalProperties: false,
+        },
+      },
+    }, async (request, reply) => {
+      try {
+        return workflow.issue({
+          type: "prepare-request",
+          request: { id: request.params.requestId, version: request.body.version },
+        });
+      } catch (error) {
+        if (error instanceof RequestVersionConflictError) {
+          return reply.code(409).send({ error: "Preparation requires the current active request" });
+        }
+        throw error;
+      }
+    });
+
     for (const [action, type] of [["defer", "defer-request"], ["retry", "retry-request"]] as const) {
       server.post<{ Params: RequestParams; Body: TransitionRequestBody }>(`/api/requests/:requestId/${action}`, {
         schema: {
