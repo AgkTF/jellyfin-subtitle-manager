@@ -38,6 +38,12 @@ function languageLabel(language: RequestSummary["language"]): string {
   return language === "en" ? "English" : "Arabic";
 }
 
+async function loadRequest(requestId: string): Promise<RequestView> {
+  const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}`);
+  if (!response.ok) throw new Error(`Request detail failed with ${response.status}`);
+  return response.json() as Promise<RequestView>;
+}
+
 function RequestWorkspace() {
   const [selectedGroup, setSelectedGroup] = useState<RequestGroup>("active");
   const [requestLists, setRequestLists] = useState<RequestLists>({
@@ -48,7 +54,9 @@ function RequestWorkspace() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<RequestView | null>(null);
   const [detailFailed, setDetailFailed] = useState(false);
+  const [transitionConflict, setTransitionConflict] = useState(false);
   const [transitionInProgress, setTransitionInProgress] = useState(false);
+  const [recoveryInProgress, setRecoveryInProgress] = useState(false);
   const pickerOpener = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -97,13 +105,28 @@ function RequestWorkspace() {
 
   async function selectRequest(request: RequestSummary) {
     setDetailFailed(false);
+    setTransitionConflict(false);
     try {
-      const response = await fetch(`/api/requests/${encodeURIComponent(request.id)}`);
-      if (!response.ok) throw new Error(`Request detail failed with ${response.status}`);
-      setSelectedRequest(await response.json() as RequestView);
+      setSelectedRequest(await loadRequest(request.id));
     } catch {
       setSelectedRequest(null);
       setDetailFailed(true);
+    }
+  }
+
+  async function recoverRequest() {
+    if (selectedRequest === null || recoveryInProgress) return;
+    setRecoveryInProgress(true);
+    setDetailFailed(false);
+    try {
+      const current = await loadRequest(selectedRequest.id);
+      setSelectedRequest(current);
+      updateRequest(current);
+      setTransitionConflict(false);
+    } catch {
+      setDetailFailed(true);
+    } finally {
+      setRecoveryInProgress(false);
     }
   }
 
@@ -117,10 +140,15 @@ function RequestWorkspace() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ version: selectedRequest.version }),
       });
+      if (response.status === 409) {
+        setTransitionConflict(true);
+        return;
+      }
       if (!response.ok) throw new Error(`Request transition failed with ${response.status}`);
       const updated = await response.json() as RequestView;
       setSelectedRequest(updated);
       updateRequest(updated);
+      setTransitionConflict(false);
     } catch {
       setDetailFailed(true);
     } finally {
@@ -272,6 +300,15 @@ function RequestWorkspace() {
               </div>
             </section>
             {detailFailed && <p className="load-error" role="alert">Request detail could not be updated. Try again.</p>}
+            {transitionConflict && selectedRequest !== null && (
+              <div className="request-conflict" role="alert">
+                <span>This request changed in another tab. Load current state to continue.</span>
+                <button className="secondary-button" disabled={recoveryInProgress}
+                  onClick={() => { void recoverRequest(); }} type="button">
+                  {recoveryInProgress ? "Loading…" : "Load current state"}
+                </button>
+              </div>
+            )}
             {selectedRequest !== null && (
               <section aria-label="Subtitle request detail" className="request-detail">
                 <header>
@@ -289,7 +326,7 @@ function RequestWorkspace() {
                     ))}
                   </ol>
                 </section>
-                <button className="secondary-button" disabled={transitionInProgress}
+                <button className="secondary-button" disabled={transitionInProgress || transitionConflict}
                   onClick={() => { void transitionRequest(selectedRequest.lifecycle === "active" ? "defer" : "retry"); }} type="button">
                   {transitionInProgress ? "Updating…" : selectedRequest.lifecycle === "active" ? "Defer request" : "Retry request"}
                 </button>

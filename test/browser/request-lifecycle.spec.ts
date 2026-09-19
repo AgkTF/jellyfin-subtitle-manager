@@ -12,6 +12,46 @@ async function createArabicRequest(page: import("@playwright/test").Page) {
   await picker.getByRole("button", { name: "Create request" }).click();
 }
 
+test("a stale subtitle-request tab recovers the current durable lifecycle", async ({ page, application }) => {
+  await page.goto(application.url);
+  await createArabicRequest(page);
+  await page.getByRole("row", { name: /Quiet Orbit \(2025\).*Arabic.*Active/ }).click();
+
+  const stalePage = await page.context().newPage();
+  await stalePage.goto(application.url);
+  await stalePage.getByRole("row", { name: /Quiet Orbit \(2025\).*Arabic.*Active/ }).click();
+  const staleDetail = stalePage.getByRole("region", { name: "Subtitle request detail" });
+  await expect(staleDetail.getByText("Active · version 1")).toBeVisible();
+
+  const currentDetail = page.getByRole("region", { name: "Subtitle request detail" });
+  await currentDetail.getByRole("button", { name: "Defer request" }).click();
+  await expect(currentDetail.getByText("Deferred · version 2")).toBeVisible();
+
+  await staleDetail.getByRole("button", { name: "Defer request" }).click();
+  const conflict = stalePage.getByRole("alert");
+  await expect(conflict).toContainText("This request changed in another tab.");
+  const loadCurrentState = conflict.getByRole("button", { name: "Load current state" });
+  await expect(loadCurrentState).toBeVisible();
+
+  const requestId = application.workflow.listRequests({ lifecycle: "deferred" }).requests[0].id;
+  const durableDeferredState = {
+    version: 2,
+    lifecycle: "deferred",
+    lifecycleHistory: [
+      { version: 1, lifecycle: "active" },
+      { version: 2, lifecycle: "deferred" },
+    ],
+  } as const;
+  expect(application.workflow.getRequest(requestId)).toMatchObject(durableDeferredState);
+
+  await loadCurrentState.dblclick();
+  await expect(stalePage.getByRole("heading", { name: "Deferred requests" })).toBeVisible();
+  await expect(staleDetail.getByText("Deferred · version 2")).toBeVisible();
+  await expect(staleDetail.getByText("Active · version 1")).toBeVisible();
+  await expect(conflict).toBeHidden();
+  expect(application.workflow.getRequest(requestId)).toMatchObject(durableDeferredState);
+});
+
 test("defers and explicitly retries a subtitle request through its detail view", async ({ page, application }) => {
   await page.goto(application.url);
   await createArabicRequest(page);
