@@ -3,11 +3,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildServer } from "./app.js";
+import { resolveApiPort } from "./config.js";
 import { openRequestWorkflow } from "./request-workflow.js";
 
-const DEFAULT_PORT = 3000;
-const requestedPort = Number.parseInt(process.env.PORT ?? "", 10);
-const port = Number.isInteger(requestedPort) ? requestedPort : DEFAULT_PORT;
+const port = resolveApiPort(process.env.PORT);
 const clientRoot = fileURLToPath(new URL("../client/", import.meta.url));
 const databasePath =
   process.env.SUBTITLE_MANAGER_STATE_PATH ??

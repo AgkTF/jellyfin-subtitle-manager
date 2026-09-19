@@ -1,0 +1,260 @@
+.primary-button,
+.secondary-button {
+  min-height: 36px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.primary-button {
+  border-color: var(--accent);
+  color: white;
+  background: var(--accent);
+}
+
+.primary-button:disabled {
+  border-color: var(--border);
+  color: var(--muted);
+  background: var(--tab-background);
+  cursor: not-allowed;
+}
+
+.inventory-picker {
+  width: min(780px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: 17px;
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 16px 64px #17212b33;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.inventory-picker::backdrop {
+  background: #17212b66;
+}
+
+.picker-heading,
+.picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.picker-heading h2 {
+  margin: 4px 0;
+  font-family: "Kodchasan Local", sans-serif;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.picker-heading button {
+  flex-shrink: 0;
+}
+
+.picker-intro,
+.picker-footer p {
+  color: var(--muted);
+}
+
+.inventory-search label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 650;
+}
+
+.inventory-search > div {
+  display: flex;
+  gap: 8px;
+}
+
+.inventory-search input {
+  min-width: 0;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--panel);
+  font: inherit;
+}
+
+.inventory-picker :is(input, summary):focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.scan-evidence {
+  margin: 16px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-subtle);
+  font-size: 11px;
+}
+
+.scan-evidence p {
+  margin: 0 0 6px;
+}
+
+.scan-evidence ul {
+  padding-left: 18px;
+  margin-bottom: 0;
+}
+
+.scan-evidence summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.inventory-results {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  list-style: none;
+}
+
+.inventory-results button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.inventory-results button:hover,
+.inventory-results button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--panel-subtle);
+}
+
+.file-identity {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.video-inspection {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.video-inspection h3 {
+  margin: 6px 0;
+  font-size: 14px;
+}
+
+.video-inspection dt {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.video-inspection dd {
+  margin: 3px 0 0;
+}
+
+.identity-options {
+  min-width: 0;
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+}
+
+.identity-options legend {
+  font-weight: 700;
+}
+
+.identity-options label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0;
+  cursor: pointer;
+}
+
+.identity-options label > span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.language-evidence-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.language-evidence {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-subtle);
+}
+
+.language-evidence h4,
+.language-evidence p {
+  margin: 0;
+}
+
+.language-evidence p {
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.picker-footer {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+@media (max-width: 760px) {
+  .ledger-heading {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .inventory-picker {
+    width: calc(100% - 16px);
+    max-height: calc(100dvh - 16px);
+    padding: 16px;
+  }
+
+  .picker-heading {
+    align-items: flex-start;
+  }
+
+  .picker-heading h2 {
+    font-size: 20px;
+  }
+
+  .language-evidence-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .picker-footer {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+}
