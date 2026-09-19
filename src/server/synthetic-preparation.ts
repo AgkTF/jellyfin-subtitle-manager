@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { SubtitleLanguage, VideoIdentity } from "./request-workflow.js";
 
 export interface SubtitleCandidate {
@@ -17,6 +19,7 @@ export interface SubtitleCandidate {
   };
   destination: string;
   recommendationReason: string;
+  identityEvidenceHash: string;
 }
 
 export interface SyntheticPreparation {
@@ -34,26 +37,41 @@ export function prepareSyntheticCandidates(
 ): SyntheticPreparation {
   const languageName = language === "ar" ? "Arabic" : "English";
   const destination = `/synthetic/subtitles/${video.id}.${language}.srt`;
-  const candidates = ["primary", "alternate", "conservative"].map((variant, index) => ({
-    id: `${video.id}-${language}-${variant}`,
-    label: `Synthetic candidate ${index + 1}`,
-    file: destination.replace(".srt", `-${variant}.srt`),
-    release: `${video.label} · synthetic ${variant}`,
-    association: `Prepared for the selected file ${video.id}; file association is synthetic fixture evidence, not a provider match.`,
-    language,
-    subtitleType: "text-based" as const,
-    provenance: "unknown" as const,
-    authorship: "unknown" as const,
-    timing: {
-      status: "unmeasured" as const,
-      evidence: "No dialogue synchronization measurement was performed.",
-      limits: "Structural and provider-style checks must not be described as measured dialogue synchronization.",
-    },
-    destination: destination.replace(".srt", `-${variant}.srt`),
-    recommendationReason: index === 0
-      ? `Recommended as the clearest ${languageName} association among the synthetic fixtures; this is not a quality or synchronization measurement.`
-      : "Available as an alternative for human review; no measured timing or authorship evidence is available.",
-  }));
+  const candidates = ["primary", "alternate", "conservative"].map((variant, index) => {
+    const evidence = {
+      id: `${video.id}-${language}-${variant}`,
+      label: `Synthetic candidate ${index + 1}`,
+      file: destination.replace(".srt", `-${variant}.srt`),
+      release: `${video.label} · synthetic ${variant}`,
+      association: `Prepared for the selected file ${video.id}; file association is synthetic fixture evidence, not a provider match.`,
+      language,
+      subtitleType: "text-based" as const,
+      provenance: "unknown" as const,
+      authorship: "unknown" as const,
+      timing: {
+        status: "unmeasured" as const,
+        evidence: "No dialogue synchronization measurement was performed.",
+        limits: "Structural and provider-style checks must not be described as measured dialogue synchronization.",
+      },
+      destination: destination.replace(".srt", `-${variant}.srt`),
+      recommendationReason: index === 0
+        ? `Recommended as the clearest ${languageName} association among the synthetic fixtures; this is not a quality or synchronization measurement.`
+        : "Available as an alternative for human review; no measured timing or authorship evidence is available.",
+    };
+    const identityEvidence = {
+      libraryId: video.libraryId,
+      videoId: video.id,
+      candidateId: evidence.id,
+      language,
+      variant,
+      file: evidence.file,
+      destination: evidence.destination,
+    };
+    return {
+      ...evidence,
+      identityEvidenceHash: createHash("sha256").update(JSON.stringify(identityEvidence)).digest("hex"),
+    };
+  });
 
   return { candidates, recommendedCandidateId: candidates[0].id };
 }

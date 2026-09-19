@@ -4,6 +4,7 @@ import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import {
+  CandidateRejectionValidationError,
   RequestVersionConflictError,
   type RequestWorkflow,
 } from "./request-workflow.js";
@@ -31,6 +32,12 @@ interface RequestParams {
 
 interface TransitionRequestBody {
   version: number;
+}
+
+interface RejectCandidateBody extends TransitionRequestBody {
+  candidateId: string;
+  identityEvidenceHash: string;
+  reason: string;
 }
 
 export function buildServer(options: ServerOptions = {}): FastifyInstance {
@@ -130,6 +137,42 @@ export function buildServer(options: ServerOptions = {}): FastifyInstance {
       } catch (error) {
         if (error instanceof RequestVersionConflictError) {
           return reply.code(409).send({ error: "Preparation requires the current active request" });
+        }
+        throw error;
+      }
+    });
+
+    server.post<{ Params: RequestParams; Body: RejectCandidateBody }>("/api/requests/:requestId/reject", {
+      schema: {
+        body: {
+          type: "object",
+          required: ["version", "candidateId", "identityEvidenceHash", "reason"],
+          properties: {
+            version: { type: "integer", minimum: 1 },
+            candidateId: { type: "string", minLength: 1, maxLength: 200 },
+            identityEvidenceHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            reason: { type: "string", minLength: 1, maxLength: 1000 },
+          },
+          additionalProperties: false,
+        },
+      },
+    }, async (request, reply) => {
+      try {
+        return workflow.issue({
+          type: "reject-candidate",
+          request: { id: request.params.requestId, version: request.body.version },
+          candidate: {
+            id: request.body.candidateId,
+            identityEvidenceHash: request.body.identityEvidenceHash,
+          },
+          reason: request.body.reason,
+        });
+      } catch (error) {
+        if (error instanceof RequestVersionConflictError) {
+          return reply.code(409).send({ error: "Candidate rejection requires the current request" });
+        }
+        if (error instanceof CandidateRejectionValidationError) {
+          return reply.code(422).send({ error: error.message });
         }
         throw error;
       }

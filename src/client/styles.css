@@ -474,6 +474,39 @@ h1 {
   margin: 0;
 }
 
+.candidate-rejection {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+}
+
+.candidate-rejection label {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.candidate-rejection textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 4.5rem;
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+  font: inherit;
+}
+
+.candidate-rejection .secondary-button {
+  justify-self: start;
+}
+
+.candidate-rejected {
+  margin-top: 0.75rem;
+  padding: 0.6rem;
+  border-left: 3px solid #a44;
+  background: #f8eded;
+}
+
 .request-detail .secondary-button {
   margin-top: 8px;
 }

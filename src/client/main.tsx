@@ -1,7 +1,11 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import type { RequestSummary, RequestView } from "../server/request-workflow.js";
+import type {
+  PreparedCandidateView,
+  RequestSummary,
+  RequestView,
+} from "../server/request-workflow.js";
 
 import { InventoryPicker } from "./inventory-picker.js";
 
@@ -57,6 +61,8 @@ function RequestWorkspace() {
   const [transitionConflict, setTransitionConflict] = useState(false);
   const [transitionInProgress, setTransitionInProgress] = useState(false);
   const [preparationInProgress, setPreparationInProgress] = useState(false);
+  const [rejectionReasons, setRejectionReasons] = useState<Record<string, string>>({});
+  const [rejectionInProgress, setRejectionInProgress] = useState<string | null>(null);
   const [recoveryInProgress, setRecoveryInProgress] = useState(false);
   const pickerOpener = useRef<HTMLButtonElement>(null);
 
@@ -88,6 +94,9 @@ function RequestWorkspace() {
     deferred: requestLists.deferred.length,
     finished: 0,
   };
+  const rejectedCandidateCount = selectedRequest?.preparation?.candidates.filter(
+    (candidate) => candidate.rejection !== null,
+  ).length ?? 0;
   const selectedLabel = groupLabels[selectedGroup];
   const selectedRequests = selectedGroup === "active" ? requestLists.active
     : selectedGroup === "deferred" ? requestLists.deferred : [];
@@ -151,6 +160,39 @@ function RequestWorkspace() {
       setDetailFailed(true);
     } finally {
       setPreparationInProgress(false);
+    }
+  }
+
+  async function rejectCandidate(candidate: PreparedCandidateView) {
+    if (selectedRequest === null || selectedRequest.lifecycle !== "active" ||
+        candidate.rejection !== null || rejectionInProgress !== null) return;
+    const reason = rejectionReasons[candidate.id]?.trim() ?? "";
+    if (reason.length === 0) return;
+    setRejectionInProgress(candidate.id);
+    setDetailFailed(false);
+    try {
+      const response = await fetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/reject`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: selectedRequest.version,
+          candidateId: candidate.id,
+          identityEvidenceHash: candidate.identityEvidenceHash,
+          reason,
+        }),
+      });
+      if (response.status === 409) {
+        setTransitionConflict(true);
+        return;
+      }
+      if (!response.ok) throw new Error(`Candidate rejection failed with ${response.status}`);
+      setSelectedRequest(await response.json() as RequestView);
+      setRejectionReasons((current) => ({ ...current, [candidate.id]: "" }));
+      setTransitionConflict(false);
+    } catch {
+      setDetailFailed(true);
+    } finally {
+      setRejectionInProgress(null);
     }
   }
 
@@ -360,21 +402,47 @@ function RequestWorkspace() {
                   <section aria-label="Prepared subtitle candidates" className="candidate-preparation">
                     <h3>Prepared synthetic candidates</h3>
                     <p>Provider and network activity: none. These candidates are synthetic fixtures for review only.</p>
-                    <p><strong>Recommendation:</strong> {selectedRequest.preparation.candidates.find((candidate) =>
-                      candidate.id === selectedRequest.preparation?.recommendedCandidateId)?.recommendationReason}</p>
+                    <p><strong>Recommendation:</strong> {selectedRequest.preparation.recommendedCandidateId === null
+                      ? "No current recommendation; the prior recommendation was rejected."
+                      : selectedRequest.preparation.candidates.find((candidate) =>
+                        candidate.id === selectedRequest.preparation?.recommendedCandidateId)?.recommendationReason}</p>
+                    <p>{rejectedCandidateCount} rejected candidate{rejectedCandidateCount === 1 ? "" : "s"}</p>
                     <ol>
-                      {selectedRequest.preparation.candidates.map((candidate) => (
-                        <li key={candidate.id}>
-                          <strong>{candidate.label}{candidate.id === selectedRequest.preparation?.recommendedCandidateId ? " · Recommended" : " · Alternative"}</strong>
-                          <dl>
-                            <dt>File / release association</dt><dd>{candidate.file} · {candidate.release}</dd>
-                            <dt>Language / type</dt><dd>{languageLabel(candidate.language)} · {candidate.subtitleType}</dd>
-                            <dt>Provenance / authorship</dt><dd>{candidate.provenance}; {candidate.language === "ar" ? "Arabic authorship remains unknown" : "authorship remains unknown"}</dd>
-                            <dt>Timing evidence</dt><dd>{candidate.timing.status}: {candidate.timing.evidence} {candidate.timing.limits}</dd>
-                            <dt>Proposed destination</dt><dd>{candidate.destination} · publication is not enabled</dd>
-                          </dl>
-                        </li>
-                      ))}
+                      {selectedRequest.preparation.candidates.map((candidate) => {
+                        const isRecommended = candidate.id === selectedRequest.preparation?.recommendedCandidateId;
+                        const reason = rejectionReasons[candidate.id] ?? "";
+                        return (
+                          <li key={candidate.id}>
+                            <strong>{candidate.label}{candidate.rejection !== null
+                              ? " · Rejected"
+                              : isRecommended ? " · Recommended" : " · Alternative"}</strong>
+                            <dl>
+                              <dt>File / release association</dt><dd>{candidate.file} · {candidate.release}</dd>
+                              <dt>Language / type</dt><dd>{languageLabel(candidate.language)} · {candidate.subtitleType}</dd>
+                              <dt>Provenance / authorship</dt><dd>{candidate.provenance}; {candidate.language === "ar" ? "Arabic authorship remains unknown" : "authorship remains unknown"}</dd>
+                              <dt>Timing evidence</dt><dd>{candidate.timing.status}: {candidate.timing.evidence} {candidate.timing.limits}</dd>
+                              <dt>Proposed destination</dt><dd>{candidate.destination} · publication is not enabled</dd>
+                            </dl>
+                            {candidate.rejection === null && selectedRequest.lifecycle === "active" ? (
+                              <div className="candidate-rejection">
+                                <label htmlFor={`rejection-${candidate.identityEvidenceHash}`}>Reason for rejecting {candidate.label}</label>
+                                <textarea id={`rejection-${candidate.identityEvidenceHash}`} maxLength={1000} value={reason}
+                                  onChange={(event) => setRejectionReasons((current) => ({
+                                    ...current,
+                                    [candidate.id]: event.target.value,
+                                  }))} />
+                                <button className="secondary-button"
+                                  disabled={reason.trim().length === 0 || rejectionInProgress !== null || transitionConflict}
+                                  onClick={() => { void rejectCandidate(candidate); }} type="button">
+                                  {rejectionInProgress === candidate.id ? "Rejecting…" : `Reject ${candidate.label}`}
+                                </button>
+                              </div>
+                            ) : candidate.rejection !== null ? (
+                              <p className="candidate-rejected"><strong>Rejected:</strong> {candidate.rejection.reason}</p>
+                            ) : null}
+                          </li>
+                        );
+                      })}
                     </ol>
                   </section>
                 )}

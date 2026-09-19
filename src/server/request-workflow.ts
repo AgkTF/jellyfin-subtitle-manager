@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 
 import {
   prepareSyntheticCandidates,
-  type SyntheticPreparation,
+  type SubtitleCandidate,
 } from "./synthetic-preparation.js";
 
 export type SubtitleLanguage = "en" | "ar";
@@ -28,9 +28,24 @@ export interface RequestLifecycleEntry {
   lifecycle: RequestLifecycle;
 }
 
+export interface CandidateRejection {
+  candidateId: string;
+  identityEvidenceHash: string;
+  reason: string;
+}
+
+export interface PreparedCandidateView extends SubtitleCandidate {
+  rejection: CandidateRejection | null;
+}
+
+export interface RequestPreparationView {
+  candidates: PreparedCandidateView[];
+  recommendedCandidateId: string | null;
+}
+
 export interface RequestView extends RequestSummary {
   lifecycleHistory: RequestLifecycleEntry[];
-  preparation: SyntheticPreparation | null;
+  preparation: RequestPreparationView | null;
 }
 
 export interface RequestListView {
@@ -67,6 +82,18 @@ export type RequestCommand =
         id: string;
         version: number;
       };
+    }
+  | {
+      type: "reject-candidate";
+      request: {
+        id: string;
+        version: number;
+      };
+      candidate: {
+        id: string;
+        identityEvidenceHash: string;
+      };
+      reason: string;
     };
 
 export interface RequestWorkflow {
@@ -83,6 +110,13 @@ export class RequestVersionConflictError extends Error {
   }
 }
 
+export class CandidateRejectionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CandidateRejectionValidationError";
+  }
+}
+
 interface RequestRow {
   request_id: string;
   version: number;
@@ -96,6 +130,16 @@ interface RequestRow {
 interface RequestLifecycleRow {
   version: number;
   lifecycle: RequestLifecycle;
+}
+
+interface CandidateRejectionRow {
+  candidate_id: string;
+  candidate_identity_hash: string;
+  reason: string;
+}
+
+interface PreparationMigrationRow extends RequestRow {
+  candidates_json: string;
 }
 
 function toRequestSummary(row: RequestRow): RequestSummary {
@@ -145,9 +189,51 @@ export function openRequestWorkflow(options: {
       recommended_candidate_id TEXT NOT NULL
     ) STRICT;
 
+    CREATE TABLE IF NOT EXISTS candidate_rejections (
+      request_id TEXT NOT NULL REFERENCES subtitle_requests(request_id),
+      library_id TEXT NOT NULL,
+      video_id TEXT NOT NULL,
+      candidate_id TEXT NOT NULL,
+      candidate_identity_hash TEXT NOT NULL,
+      reason TEXT NOT NULL CHECK (length(trim(reason)) > 0),
+      PRIMARY KEY (request_id, candidate_id, candidate_identity_hash)
+    ) STRICT;
+
     INSERT OR IGNORE INTO request_lifecycle_history (request_id, version, lifecycle)
     SELECT request_id, version, lifecycle FROM subtitle_requests;
   `);
+
+  const preparationRows = database.prepare(`
+    SELECT
+      r.request_id, r.version, r.library_id, r.video_id, r.video_label, r.language, r.lifecycle,
+      p.candidates_json
+    FROM request_preparations p
+    JOIN subtitle_requests r ON r.request_id = p.request_id
+  `).all() as PreparationMigrationRow[];
+  const updatePreparationCandidates = database.prepare(`
+    UPDATE request_preparations SET candidates_json = ? WHERE request_id = ?
+  `);
+  database.transaction(() => {
+    for (const row of preparationRows) {
+      const stored = JSON.parse(row.candidates_json) as Array<
+        Omit<SubtitleCandidate, "identityEvidenceHash"> & { identityEvidenceHash?: string }
+      >;
+      if (stored.every((candidate) => candidate.identityEvidenceHash !== undefined)) continue;
+      const generated = prepareSyntheticCandidates(
+        { libraryId: row.library_id, id: row.video_id, label: row.video_label },
+        row.language,
+      ).candidates;
+      const migrated = stored.map((candidate) => {
+        if (candidate.identityEvidenceHash !== undefined) return candidate;
+        const identityEvidenceHash = generated.find((item) => item.id === candidate.id)?.identityEvidenceHash;
+        if (identityEvidenceHash === undefined) {
+          throw new Error(`Prepared candidate ${candidate.id} cannot be migrated to identity evidence`);
+        }
+        return { ...candidate, identityEvidenceHash };
+      });
+      updatePreparationCandidates.run(JSON.stringify(migrated), row.request_id);
+    }
+  })();
 
   const insertRequest = database.prepare(`
     INSERT INTO subtitle_requests (
@@ -203,6 +289,25 @@ export function openRequestWorkflow(options: {
     INSERT OR IGNORE INTO request_preparations (request_id, candidates_json, recommended_candidate_id)
     VALUES (?, ?, ?)
   `);
+  const selectCandidateRejections = database.prepare(`
+    SELECT candidate_id, candidate_identity_hash, reason
+    FROM candidate_rejections
+    WHERE request_id = ?
+    ORDER BY candidate_id, candidate_identity_hash
+  `);
+  const insertCandidateRejection = database.prepare(`
+    INSERT OR IGNORE INTO candidate_rejections (
+      request_id, library_id, video_id, candidate_id, candidate_identity_hash, reason
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  const readPreparationCandidates = (candidatesJson: string): SubtitleCandidate[] => {
+    const candidates = JSON.parse(candidatesJson) as SubtitleCandidate[];
+    if (candidates.some((candidate) => candidate.identityEvidenceHash === undefined)) {
+      throw new Error("Prepared candidates were not migrated to identity evidence hashes");
+    }
+    return candidates;
+  };
 
   const readRequest = (requestId: string): RequestView | undefined => {
     const row = selectRequest.get(requestId) as RequestRow | undefined;
@@ -216,9 +321,29 @@ export function openRequestWorkflow(options: {
       candidates_json: string;
       recommended_candidate_id: string;
     } | undefined;
-    const preparation = preparationRow === undefined ? null : {
-      candidates: JSON.parse(preparationRow.candidates_json) as SyntheticPreparation["candidates"],
-      recommendedCandidateId: preparationRow.recommended_candidate_id,
+    const preparationCandidates = preparationRow === undefined
+      ? null
+      : readPreparationCandidates(preparationRow.candidates_json);
+    const rejectionRows = selectCandidateRejections.all(requestId) as CandidateRejectionRow[];
+    const rejections = new Map(rejectionRows.map((rejection) => [
+      `${rejection.candidate_id}\0${rejection.candidate_identity_hash}`,
+      {
+        candidateId: rejection.candidate_id,
+        identityEvidenceHash: rejection.candidate_identity_hash,
+        reason: rejection.reason,
+      },
+    ]));
+    const candidates = preparationCandidates?.map((candidate) => ({
+      ...candidate,
+      rejection: rejections.get(`${candidate.id}\0${candidate.identityEvidenceHash}`) ?? null,
+    })) ?? null;
+    const originalRecommendation = preparationRow?.recommended_candidate_id;
+    const recommendationWasRejected = candidates?.find(
+      (candidate) => candidate.id === originalRecommendation,
+    )?.rejection != null;
+    const preparation = candidates === null ? null : {
+      candidates,
+      recommendedCandidateId: recommendationWasRejected ? null : originalRecommendation ?? null,
     };
     return { ...toRequestSummary(row), lifecycleHistory, preparation };
   };
@@ -294,6 +419,38 @@ export function openRequestWorkflow(options: {
       );
     },
   );
+  const rejectPreparedCandidate = database.transaction(
+    (command: Extract<RequestCommand, { type: "reject-candidate" }>) => {
+      const reason = command.reason.trim();
+      if (reason.length === 0) {
+        throw new CandidateRejectionValidationError("A rejection reason is required");
+      }
+      const row = selectRequest.get(command.request.id) as RequestRow | undefined;
+      if (row === undefined || row.version !== command.request.version || row.lifecycle !== "active") {
+        throw new RequestVersionConflictError();
+      }
+      const preparationRow = selectPreparation.get(command.request.id) as {
+        candidates_json: string;
+      } | undefined;
+      const candidates = preparationRow === undefined
+        ? []
+        : readPreparationCandidates(preparationRow.candidates_json);
+      const candidate = candidates.find((item) =>
+        item.id === command.candidate.id &&
+        item.identityEvidenceHash === command.candidate.identityEvidenceHash);
+      if (candidate === undefined) {
+        throw new CandidateRejectionValidationError("Reject an explicitly prepared candidate with unchanged evidence");
+      }
+      insertCandidateRejection.run(
+        row.request_id,
+        row.library_id,
+        row.video_id,
+        candidate.id,
+        candidate.identityEvidenceHash,
+        reason,
+      );
+    },
+  );
 
   const workflow: RequestWorkflow = {
     issue(command) {
@@ -310,6 +467,9 @@ export function openRequestWorkflow(options: {
           break;
         case "prepare-request":
           prepareActiveRequest(command.request);
+          break;
+        case "reject-candidate":
+          rejectPreparedCandidate(command);
           break;
       }
       const view = readRequest(requestId);
