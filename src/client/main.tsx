@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import type { RequestSummary } from "../server/request-workflow.js";
+import type { RequestSummary, RequestView } from "../server/request-workflow.js";
 
 import { InventoryPicker } from "./inventory-picker.js";
 
@@ -46,6 +46,9 @@ function RequestWorkspace() {
   });
   const [loadFailed, setLoadFailed] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [selectedRequest, setSelectedRequest] = useState<RequestView | null>(null);
+  const [detailFailed, setDetailFailed] = useState(false);
+  const [transitionInProgress, setTransitionInProgress] = useState(false);
   const pickerOpener = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -80,7 +83,7 @@ function RequestWorkspace() {
   const selectedRequests = selectedGroup === "active" ? requestLists.active
     : selectedGroup === "deferred" ? requestLists.deferred : [];
 
-  function handleRequestCreated(request: RequestSummary) {
+  function updateRequest(request: RequestSummary) {
     setRequestLists((current) => ({
       active: request.lifecycle === "active"
         ? [...current.active.filter((item) => item.id !== request.id), request]
@@ -90,6 +93,39 @@ function RequestWorkspace() {
         : current.deferred.filter((item) => item.id !== request.id),
     }));
     setSelectedGroup(request.lifecycle);
+  }
+
+  async function selectRequest(request: RequestSummary) {
+    setDetailFailed(false);
+    try {
+      const response = await fetch(`/api/requests/${encodeURIComponent(request.id)}`);
+      if (!response.ok) throw new Error(`Request detail failed with ${response.status}`);
+      setSelectedRequest(await response.json() as RequestView);
+    } catch {
+      setSelectedRequest(null);
+      setDetailFailed(true);
+    }
+  }
+
+  async function transitionRequest(action: "defer" | "retry") {
+    if (selectedRequest === null || transitionInProgress) return;
+    setTransitionInProgress(true);
+    setDetailFailed(false);
+    try {
+      const response = await fetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: selectedRequest.version }),
+      });
+      if (!response.ok) throw new Error(`Request transition failed with ${response.status}`);
+      const updated = await response.json() as RequestView;
+      setSelectedRequest(updated);
+      updateRequest(updated);
+    } catch {
+      setDetailFailed(true);
+    } finally {
+      setTransitionInProgress(false);
+    }
   }
 
   return (
@@ -219,7 +255,7 @@ function RequestWorkspace() {
                   <div className="empty-request-group">Nothing in this request group.</div>
                 ) : (
                   selectedRequests.map((request) => (
-                    <div className="request-row" key={request.id} role="row">
+                    <div className="request-row" key={request.id} onClick={() => { void selectRequest(request); }} role="row">
                       <div role="cell">
                         <strong>{request.video.label}</strong>
                         <span className="request-video-id">{request.video.id}</span>
@@ -235,10 +271,34 @@ function RequestWorkspace() {
                 )}
               </div>
             </section>
+            {detailFailed && <p className="load-error" role="alert">Request detail could not be updated. Try again.</p>}
+            {selectedRequest !== null && (
+              <section aria-label="Subtitle request detail" className="request-detail">
+                <header>
+                  <span className="eyebrow">Subtitle request detail</span>
+                  <h2>{selectedRequest.video.label} · {languageLabel(selectedRequest.language)}</h2>
+                  <p>{selectedRequest.lifecycle === "active"
+                    ? "This request is in active attention."
+                    : "This deferred request will return to active attention only when you retry it."}</p>
+                </header>
+                <section aria-labelledby="lifecycle-history-heading">
+                  <h3 id="lifecycle-history-heading">Lifecycle history</h3>
+                  <ol>
+                    {selectedRequest.lifecycleHistory.map((entry) => (
+                      <li key={entry.version}>{groupLabels[entry.lifecycle]} · version {entry.version}</li>
+                    ))}
+                  </ol>
+                </section>
+                <button className="secondary-button" disabled={transitionInProgress}
+                  onClick={() => { void transitionRequest(selectedRequest.lifecycle === "active" ? "defer" : "retry"); }} type="button">
+                  {transitionInProgress ? "Updating…" : selectedRequest.lifecycle === "active" ? "Defer request" : "Retry request"}
+                </button>
+              </section>
+            )}
           </div>
         </main>
       </section>
-      {pickerOpen && <InventoryPicker onCreated={handleRequestCreated} onClose={() => {
+      {pickerOpen && <InventoryPicker onCreated={updateRequest} onClose={() => {
         setPickerOpen(false);
         pickerOpener.current?.focus();
       }} />}

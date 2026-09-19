@@ -394,6 +394,41 @@ h1 {
   border-bottom: 0;
 }
 
+.request-row {
+  cursor: pointer;
+}
+
+.request-row:hover {
+  background: var(--panel-subtle);
+}
+
+.request-detail {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.request-detail h2,
+.request-detail h3 {
+  margin: 4px 0;
+}
+
+.request-detail p,
+.request-detail li {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.request-detail ol {
+  padding-left: 20px;
+}
+
+.request-detail .secondary-button {
+  margin-top: 8px;
+}
+
 .request-row > [role="cell"] {
   min-width: 0;
 }

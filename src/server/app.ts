@@ -3,7 +3,10 @@ import { randomUUID } from "node:crypto";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 
-import type { RequestWorkflow } from "./request-workflow.js";
+import {
+  RequestVersionConflictError,
+  type RequestWorkflow,
+} from "./request-workflow.js";
 import {
   openSyntheticSavedInventory,
   type SavedInventoryAdapter,
@@ -20,6 +23,14 @@ interface CreateRequestBody {
   videoId: string;
   identityId: string;
   language: "en" | "ar";
+}
+
+interface RequestParams {
+  requestId: string;
+}
+
+interface TransitionRequestBody {
+  version: number;
 }
 
 export function buildServer(options: ServerOptions = {}): FastifyInstance {
@@ -95,6 +106,33 @@ export function buildServer(options: ServerOptions = {}): FastifyInstance {
       });
       return reply.code(201).send(created);
     });
+
+    server.get<{ Params: RequestParams }>("/api/requests/:requestId", async (request, reply) => {
+      const view = workflow.getRequest(request.params.requestId);
+      return view === undefined ? reply.code(404).send({ error: "Subtitle request was not found" }) : view;
+    });
+
+    for (const [action, type] of [["defer", "defer-request"], ["retry", "retry-request"]] as const) {
+      server.post<{ Params: RequestParams; Body: TransitionRequestBody }>(`/api/requests/:requestId/${action}`, {
+        schema: {
+          body: {
+            type: "object",
+            required: ["version"],
+            properties: { version: { type: "integer", minimum: 1 } },
+            additionalProperties: false,
+          },
+        },
+      }, async (request, reply) => {
+        try {
+          return workflow.issue({ type, request: { id: request.params.requestId, version: request.body.version } });
+        } catch (error) {
+          if (error instanceof RequestVersionConflictError) {
+            return reply.code(409).send({ error: "Subtitle request is no longer in that lifecycle state" });
+          }
+          throw error;
+        }
+      });
+    }
   }
 
   if (options.clientRoot !== undefined) {
