@@ -443,6 +443,37 @@ h1 {
   padding-left: 20px;
 }
 
+.candidate-preparation {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  border: 1px solid var(--line, #d8d4cb);
+  border-radius: 0.75rem;
+  background: var(--surface-muted, #f5f2eb);
+}
+
+.candidate-preparation ol {
+  padding-left: 1.25rem;
+}
+
+.candidate-preparation li {
+  margin: 1rem 0;
+}
+
+.candidate-preparation dl {
+  display: grid;
+  grid-template-columns: minmax(9rem, max-content) 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0.5rem 0 0;
+}
+
+.candidate-preparation dt {
+  font-weight: 600;
+}
+
+.candidate-preparation dd {
+  margin: 0;
+}
+
 .request-detail .secondary-button {
   margin-top: 8px;
 }

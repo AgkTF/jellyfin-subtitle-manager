@@ -24,6 +24,7 @@ const syntheticRequest = {
 const activeRequestView = {
   ...syntheticRequest,
   lifecycleHistory: [{ version: 1, lifecycle: "active" }],
+  preparation: null,
 } as const;
 
 test("a subtitle request remains active after the workflow is reopened", (context) => {
@@ -92,6 +93,7 @@ test("a subtitle request remains deferred after the workflow is reopened", (cont
       { version: 1, lifecycle: "active" },
       { version: 2, lifecycle: "deferred" },
     ],
+    preparation: null,
   });
   assert.deepEqual(reopened.listRequests({ lifecycle: "deferred" }), {
     requests: [deferredRequest],
@@ -169,6 +171,7 @@ test("retrying a deferred subtitle request makes it durably active", (context) =
       { version: 2, lifecycle: "deferred" },
       { version: 3, lifecycle: "active" },
     ],
+    preparation: null,
   });
   assert.deepEqual(reopened.listRequests({ lifecycle: "active" }), {
     requests: [retriedRequest],
@@ -176,6 +179,39 @@ test("retrying a deferred subtitle request makes it durably active", (context) =
   assert.deepEqual(reopened.listRequests({ lifecycle: "deferred" }), {
     requests: [],
   });
+});
+
+test("preparing an active request stores three bounded synthetic candidates and survives restart", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
+  const databasePath = join(directory, "workflow.sqlite");
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const workflow = openRequestWorkflow({ databasePath });
+  workflow.issue({
+    type: "create-request",
+    request: { id: syntheticRequest.id, version: 0 },
+    video: syntheticRequest.video,
+    language: syntheticRequest.language,
+  });
+  const prepared = workflow.issue({
+    type: "prepare-request",
+    request: { id: syntheticRequest.id, version: 1 },
+  });
+
+  assert.equal(prepared.lifecycle, "active");
+  assert.equal(prepared.preparation?.candidates.length, 3);
+  assert.equal(prepared.preparation?.candidates.every((candidate) => candidate.timing.status === "unmeasured"), true);
+  assert.equal(prepared.preparation?.candidates.every((candidate) => candidate.provenance === "unknown"), true);
+  assert.equal(prepared.preparation?.candidates.some((candidate) => candidate.language === "ar" && candidate.authorship === "unknown"), true);
+  assert.equal(prepared.preparation?.candidates.length, 3);
+  assert.equal(prepared.preparation?.recommendedCandidateId, prepared.preparation?.candidates[0].id);
+  workflow.close();
+
+  const reopened = openRequestWorkflow({ databasePath });
+  context.after(() => reopened.close());
+  const restored = reopened.getRequest(syntheticRequest.id);
+  assert.deepEqual(restored?.preparation, prepared.preparation);
+  assert.equal(restored?.version, 1);
 });
 
 test("a request view retains durable lifecycle history", (context) => {
@@ -211,6 +247,7 @@ test("a request view retains durable lifecycle history", (context) => {
       { version: 2, lifecycle: "deferred" },
       { version: 3, lifecycle: "active" },
     ],
+    preparation: null,
   });
 });
 
@@ -245,6 +282,7 @@ test("repeated creation for one video and language keeps one lifecycle history",
   assert.deepEqual(reopened.getRequest("request-first"), {
     ...expectedRequest,
     lifecycleHistory: [{ version: 1, lifecycle: "active" }],
+    preparation: null,
   });
 });
 

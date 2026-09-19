@@ -1,5 +1,10 @@
 import Database from "better-sqlite3";
 
+import {
+  prepareSyntheticCandidates,
+  type SyntheticPreparation,
+} from "./synthetic-preparation.js";
+
 export type SubtitleLanguage = "en" | "ar";
 
 export interface VideoIdentity {
@@ -25,6 +30,7 @@ export interface RequestLifecycleEntry {
 
 export interface RequestView extends RequestSummary {
   lifecycleHistory: RequestLifecycleEntry[];
+  preparation: SyntheticPreparation | null;
 }
 
 export interface RequestListView {
@@ -50,6 +56,13 @@ export type RequestCommand =
     }
   | {
       type: "retry-request";
+      request: {
+        id: string;
+        version: number;
+      };
+    }
+  | {
+      type: "prepare-request";
       request: {
         id: string;
         version: number;
@@ -126,6 +139,12 @@ export function openRequestWorkflow(options: {
     CREATE UNIQUE INDEX IF NOT EXISTS subtitle_requests_video_language
     ON subtitle_requests (library_id, video_id, language);
 
+    CREATE TABLE IF NOT EXISTS request_preparations (
+      request_id TEXT PRIMARY KEY REFERENCES subtitle_requests(request_id),
+      candidates_json TEXT NOT NULL,
+      recommended_candidate_id TEXT NOT NULL
+    ) STRICT;
+
     INSERT OR IGNORE INTO request_lifecycle_history (request_id, version, lifecycle)
     SELECT request_id, version, lifecycle FROM subtitle_requests;
   `);
@@ -175,6 +194,15 @@ export function openRequestWorkflow(options: {
     WHERE request_id = ?
     ORDER BY version
   `);
+  const selectPreparation = database.prepare(`
+    SELECT candidates_json, recommended_candidate_id
+    FROM request_preparations
+    WHERE request_id = ?
+  `);
+  const insertPreparation = database.prepare(`
+    INSERT OR IGNORE INTO request_preparations (request_id, candidates_json, recommended_candidate_id)
+    VALUES (?, ?, ?)
+  `);
 
   const readRequest = (requestId: string): RequestView | undefined => {
     const row = selectRequest.get(requestId) as RequestRow | undefined;
@@ -184,7 +212,15 @@ export function openRequestWorkflow(options: {
     const lifecycleHistory = selectLifecycleHistory.all(
       requestId,
     ) as RequestLifecycleRow[];
-    return { ...toRequestSummary(row), lifecycleHistory };
+    const preparationRow = selectPreparation.get(requestId) as {
+      candidates_json: string;
+      recommended_candidate_id: string;
+    } | undefined;
+    const preparation = preparationRow === undefined ? null : {
+      candidates: JSON.parse(preparationRow.candidates_json) as SyntheticPreparation["candidates"],
+      recommendedCandidateId: preparationRow.recommended_candidate_id,
+    };
+    return { ...toRequestSummary(row), lifecycleHistory, preparation };
   };
 
   const createRequest = database.transaction(
@@ -236,6 +272,28 @@ export function openRequestWorkflow(options: {
       insertLifecycleHistory.run(row.request_id, row.version, row.lifecycle);
     },
   );
+  const prepareActiveRequest = database.transaction(
+    (request: { id: string; version: number }) => {
+      const row = selectRequest.get(request.id) as RequestRow | undefined;
+      if (row === undefined || row.version !== request.version || row.lifecycle !== "active") {
+        throw new RequestVersionConflictError();
+      }
+      const existing = selectPreparation.get(request.id) as {
+        candidates_json: string;
+        recommended_candidate_id: string;
+      } | undefined;
+      if (existing !== undefined) return;
+      const preparation = prepareSyntheticCandidates(
+        { libraryId: row.library_id, id: row.video_id, label: row.video_label },
+        row.language,
+      );
+      insertPreparation.run(
+        request.id,
+        JSON.stringify(preparation.candidates),
+        preparation.recommendedCandidateId,
+      );
+    },
+  );
 
   const workflow: RequestWorkflow = {
     issue(command) {
@@ -249,6 +307,9 @@ export function openRequestWorkflow(options: {
           break;
         case "retry-request":
           retryDeferredRequest(command.request);
+          break;
+        case "prepare-request":
+          prepareActiveRequest(command.request);
           break;
       }
       const view = readRequest(requestId);
