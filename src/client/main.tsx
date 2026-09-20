@@ -163,6 +163,30 @@ function RequestWorkspace() {
     }
   }
 
+  async function retryPreparation() {
+    if (selectedRequest === null || selectedRequest.lifecycle !== "active" || preparationInProgress) return;
+    setPreparationInProgress(true);
+    setDetailFailed(false);
+    try {
+      const response = await fetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/retry-preparation`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: selectedRequest.version }),
+      });
+      if (response.status === 409) {
+        setTransitionConflict(true);
+        return;
+      }
+      if (!response.ok) throw new Error(`Preparation retry failed with ${response.status}`);
+      setSelectedRequest(await response.json() as RequestView);
+      setTransitionConflict(false);
+    } catch {
+      setDetailFailed(true);
+    } finally {
+      setPreparationInProgress(false);
+    }
+  }
+
   async function rejectCandidate(candidate: PreparedCandidateView) {
     if (selectedRequest === null || selectedRequest.lifecycle !== "active" ||
         candidate.rejection !== null || rejectionInProgress !== null) return;
@@ -400,14 +424,24 @@ function RequestWorkspace() {
                 )}
                 {selectedRequest.preparation !== null && (
                   <section aria-label="Prepared subtitle candidates" className="candidate-preparation">
-                    <h3>Prepared synthetic candidates</h3>
-                    <p>Provider and network activity: none. These candidates are synthetic fixtures for review only.</p>
-                    <p><strong>Recommendation:</strong> {selectedRequest.preparation.recommendedCandidateId === null
-                      ? "No current recommendation; the prior recommendation was rejected."
-                      : selectedRequest.preparation.candidates.find((candidate) =>
-                        candidate.id === selectedRequest.preparation?.recommendedCandidateId)?.recommendationReason}</p>
-                    <p>{rejectedCandidateCount} rejected candidate{rejectedCandidateCount === 1 ? "" : "s"}</p>
-                    <ol>
+                    <h3>Preparation result</h3>
+                    <p><strong>Outcome:</strong> {selectedRequest.preparation.outcome}</p>
+                    <p>{selectedRequest.preparation.explanation}</p>
+                    <p>Provider and network activity: none. This bounded run did not download a candidate.</p>
+                    {selectedRequest.preparation.nextActions.includes("retry") && selectedRequest.lifecycle === "active" && (
+                      <button className="secondary-button" disabled={preparationInProgress || transitionConflict}
+                        onClick={() => { void retryPreparation(); }} type="button">
+                        {preparationInProgress ? "Retrying preparation…" : "Retry preparation"}
+                      </button>
+                    )}
+                    {selectedRequest.preparation.outcome === "candidates-found" && <>
+                      <p><strong>Recommendation:</strong> {selectedRequest.preparation.recommendedCandidateId === null
+                        ? "No current recommendation; the prior recommendation was rejected."
+                        : selectedRequest.preparation.candidates.find((candidate) =>
+                          candidate.id === selectedRequest.preparation?.recommendedCandidateId)?.recommendationReason}</p>
+                      <p>{rejectedCandidateCount} rejected candidate{rejectedCandidateCount === 1 ? "" : "s"}</p>
+                    </>}
+                    {selectedRequest.preparation.candidates.length > 0 && <ol>
                       {selectedRequest.preparation.candidates.map((candidate) => {
                         const isRecommended = candidate.id === selectedRequest.preparation?.recommendedCandidateId;
                         const reason = rejectionReasons[candidate.id] ?? "";
@@ -443,7 +477,7 @@ function RequestWorkspace() {
                           </li>
                         );
                       })}
-                    </ol>
+                    </ol>}
                   </section>
                 )}
                 <button className="secondary-button" disabled={transitionInProgress || transitionConflict}

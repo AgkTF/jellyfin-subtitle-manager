@@ -142,6 +142,29 @@ export function buildServer(options: ServerOptions = {}): FastifyInstance {
       }
     });
 
+    server.post<{ Params: RequestParams; Body: TransitionRequestBody }>("/api/requests/:requestId/retry-preparation", {
+      schema: {
+        body: {
+          type: "object",
+          required: ["version"],
+          properties: { version: { type: "integer", minimum: 1 } },
+          additionalProperties: false,
+        },
+      },
+    }, async (request, reply) => {
+      try {
+        return workflow.issue({
+          type: "retry-preparation",
+          request: { id: request.params.requestId, version: request.body.version },
+        });
+      } catch (error) {
+        if (error instanceof RequestVersionConflictError) {
+          return reply.code(409).send({ error: "Preparation retry requires the current active request" });
+        }
+        throw error;
+      }
+    });
+
     server.post<{ Params: RequestParams; Body: RejectCandidateBody }>("/api/requests/:requestId/reject", {
       schema: {
         body: {
