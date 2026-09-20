@@ -191,7 +191,93 @@ test("creates one request for an explicitly selected unambiguous identity and la
   assert.equal(invalidLanguage.statusCode, 400);
 });
 
-test("saved-inventory searches preserve existing requests and never expose a mutation operation", async (context) => {
+test("downloads only an owned prepared candidate and records durable preview evidence", async (context) => {
+  const workflow = openRequestWorkflow({ databasePath: ":memory:" });
+  const server = buildServer({ workflow });
+  context.after(async () => { await server.close(); workflow.close(); });
+
+  const created = await server.inject({
+    method: "POST", url: "/api/requests", payload: {
+      videoId: "quiet-orbit", identityId: "quiet-orbit-2025", language: "ar",
+    },
+  });
+  const prepared = await server.inject({
+    method: "POST", url: `/api/requests/${created.json().id}/prepare`, payload: { version: 1 },
+  });
+  const request = prepared.json();
+  const candidate = request.preparation.candidates[0];
+  assert.notEqual(candidate.attachment.id, candidate.id);
+  assert.match(candidate.attachment.id, /^[0-9a-f-]{36}$/);
+  assert.equal(candidate.attachment.contentHash, candidate.contentHash);
+  assert.match(candidate.attachment.filename, /\.srt$/);
+
+  const download = await server.inject({
+    method: "GET", url: candidate.attachment.downloadUrl,
+  });
+  assert.equal(download.statusCode, 200);
+  assert.match(download.headers["content-disposition"] ?? "", /^attachment; filename="/);
+  assert.match(download.body, /Synthetic subtitle candidate/);
+  assert.equal(download.headers["content-type"], "application/x-subrip");
+  assert.equal((await server.inject({ method: "GET", url: "/api/candidate-attachments/not-owned" })).statusCode, 404);
+
+  const otherCreated = await server.inject({
+    method: "POST", url: "/api/requests", payload: {
+      videoId: "quiet-orbit", identityId: "quiet-orbit-2025", language: "en",
+    },
+  });
+  const crossRequest = await server.inject({
+    method: "POST", url: `/api/requests/${otherCreated.json().id}/preview-observations`,
+    payload: {
+      version: 1, attachmentId: candidate.attachment.id, client: "Existing desktop player",
+      outcome: "usable", sample: { beginning: "checked", middle: "checked", end: "checked" },
+    },
+  });
+  assert.equal(crossRequest.statusCode, 422);
+
+  const observation = await server.inject({
+    method: "POST", url: `/api/requests/${request.id}/preview-observations`,
+    payload: {
+      version: 1,
+      attachmentId: candidate.attachment.id,
+      client: "Existing desktop player",
+      outcome: "inconclusive",
+      sample: { beginning: "checked", middle: "failed", end: "not-checked" },
+      note: "The middle sample was not usable.",
+    },
+  });
+  assert.equal(observation.statusCode, 201);
+  assert.deepEqual(observation.json().previewObservations[0], {
+    id: observation.json().previewObservations[0].id,
+    attachmentId: candidate.attachment.id,
+    video: request.video,
+    candidateId: candidate.id,
+    candidateContentHash: candidate.contentHash,
+    client: "Existing desktop player",
+    outcome: "inconclusive",
+    sample: { beginning: "checked", middle: "failed", end: "not-checked" },
+    note: "The middle sample was not usable.",
+    recordedAt: observation.json().previewObservations[0].recordedAt,
+  });
+
+  const rejected = await server.inject({
+    method: "POST", url: `/api/requests/${request.id}/reject`, payload: {
+      version: 1, candidateId: candidate.id, identityEvidenceHash: candidate.identityEvidenceHash,
+      reason: "The preview was not suitable.",
+    },
+  });
+  assert.equal(rejected.statusCode, 200);
+  assert.equal((await server.inject({ method: "GET", url: candidate.attachment.downloadUrl })).statusCode, 404);
+  const observedRejected = await server.inject({
+    method: "POST", url: `/api/requests/${request.id}/preview-observations`,
+    payload: {
+      version: 1, attachmentId: candidate.attachment.id, client: "Existing desktop player",
+      outcome: "usable", sample: { beginning: "checked", middle: "checked", end: "checked" },
+    },
+  });
+  assert.equal(observedRejected.statusCode, 422);
+});
+
+test("saved-inventory searches preserve existing requests and never expose a mutation operation",  async (context) => {
   const workflow = openRequestWorkflow({ databasePath: ":memory:" });
   workflow.issue({
     type: "create-request", request: { id: "existing-synthetic-request", version: 0 },

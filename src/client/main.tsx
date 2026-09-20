@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 
 import type {
   PreparedCandidateView,
+  PreviewOutcome,
+  PreviewSampleStatus,
   RequestSummary,
   RequestView,
 } from "../server/request-workflow.js";
@@ -64,6 +66,16 @@ function RequestWorkspace() {
   const [rejectionReasons, setRejectionReasons] = useState<Record<string, string>>({});
   const [rejectionInProgress, setRejectionInProgress] = useState<string | null>(null);
   const [recoveryInProgress, setRecoveryInProgress] = useState(false);
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
+  const [previewClient, setPreviewClient] = useState("Existing desktop player");
+  const [previewOutcome, setPreviewOutcome] = useState<PreviewOutcome>("inconclusive");
+  const [previewSample, setPreviewSample] = useState<Record<"beginning" | "middle" | "end", PreviewSampleStatus>>({
+    beginning: "not-checked",
+    middle: "not-checked",
+    end: "not-checked",
+  });
+  const [previewNote, setPreviewNote] = useState("");
+  const [observationInProgress, setObservationInProgress] = useState(false);
   const pickerOpener = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -97,6 +109,12 @@ function RequestWorkspace() {
   const rejectedCandidateCount = selectedRequest?.preparation?.candidates.filter(
     (candidate) => candidate.rejection !== null,
   ).length ?? 0;
+  const preparedCandidates = selectedRequest?.preparation?.candidates ?? [];
+  const selectedCandidate = preparedCandidates.find((candidate) =>
+    candidate.id === selectedCandidateId && candidate.rejection === null,
+  ) ?? preparedCandidates.find((candidate) =>
+    candidate.id === selectedRequest?.preparation?.recommendedCandidateId && candidate.rejection === null,
+  ) ?? preparedCandidates.find((candidate) => candidate.rejection === null);
   const selectedLabel = groupLabels[selectedGroup];
   const selectedRequests = selectedGroup === "active" ? requestLists.active
     : selectedGroup === "deferred" ? requestLists.deferred : [];
@@ -116,6 +134,7 @@ function RequestWorkspace() {
   async function selectRequest(request: RequestSummary) {
     setDetailFailed(false);
     setTransitionConflict(false);
+    setSelectedCandidateId(null);
     try {
       setSelectedRequest(await loadRequest(request.id));
     } catch {
@@ -187,6 +206,39 @@ function RequestWorkspace() {
     }
   }
 
+  async function recordPreviewObservation() {
+    const candidate = selectedCandidate;
+    if (selectedRequest === null || candidate === undefined || candidate.attachment === null || observationInProgress) return;
+    setObservationInProgress(true);
+    setDetailFailed(false);
+    try {
+      const response = await fetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/preview-observations`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: selectedRequest.version,
+          attachmentId: candidate.attachment.id,
+          client: previewClient,
+          outcome: previewOutcome,
+          sample: previewSample,
+          note: previewNote,
+        }),
+      });
+      if (response.status === 409) {
+        setTransitionConflict(true);
+        return;
+      }
+      if (!response.ok) throw new Error(`Preview observation failed with ${response.status}`);
+      setSelectedRequest(await response.json() as RequestView);
+      setPreviewNote("");
+      setTransitionConflict(false);
+    } catch {
+      setDetailFailed(true);
+    } finally {
+      setObservationInProgress(false);
+    }
+  }
+
   async function rejectCandidate(candidate: PreparedCandidateView) {
     if (selectedRequest === null || selectedRequest.lifecycle !== "active" ||
         candidate.rejection !== null || rejectionInProgress !== null) return;
@@ -211,6 +263,7 @@ function RequestWorkspace() {
       }
       if (!response.ok) throw new Error(`Candidate rejection failed with ${response.status}`);
       setSelectedRequest(await response.json() as RequestView);
+      setSelectedCandidateId(null);
       setRejectionReasons((current) => ({ ...current, [candidate.id]: "" }));
       setTransitionConflict(false);
     } catch {
@@ -427,7 +480,7 @@ function RequestWorkspace() {
                     <h3>Preparation result</h3>
                     <p><strong>Outcome:</strong> {selectedRequest.preparation.outcome}</p>
                     <p>{selectedRequest.preparation.explanation}</p>
-                    <p>Provider and network activity: none. This bounded run did not download a candidate.</p>
+                    <p>Provider and network activity: none. Only the selected candidate can be downloaded as an application-owned attachment.</p>
                     {selectedRequest.preparation.nextActions.includes("retry") && selectedRequest.lifecycle === "active" && (
                       <button className="secondary-button" disabled={preparationInProgress || transitionConflict}
                         onClick={() => { void retryPreparation(); }} type="button">
@@ -447,10 +500,18 @@ function RequestWorkspace() {
                         const reason = rejectionReasons[candidate.id] ?? "";
                         return (
                           <li key={candidate.id}>
+                            <button className="secondary-button candidate-select" disabled={candidate.rejection !== null}
+                              aria-pressed={selectedCandidate?.id === candidate.id}
+                              onClick={() => setSelectedCandidateId(candidate.id)} type="button">
+                              {selectedCandidate?.id === candidate.id ? "Selected candidate" : `Select ${candidate.label}`}
+                            </button>
                             <strong>{candidate.label}{candidate.rejection !== null
                               ? " · Rejected"
                               : isRecommended ? " · Recommended" : " · Alternative"}</strong>
                             <dl>
+                              <dt>Candidate ID</dt><dd>{candidate.id}</dd>
+                              <dt>Content SHA-256</dt><dd className="file-identity">{candidate.contentHash}</dd>
+                              <dt>Identity evidence hash</dt><dd className="file-identity">{candidate.identityEvidenceHash}</dd>
                               <dt>File / release association</dt><dd>{candidate.file} · {candidate.release}</dd>
                               <dt>Language / type</dt><dd>{languageLabel(candidate.language)} · {candidate.subtitleType}</dd>
                               <dt>Provenance / authorship</dt><dd>{candidate.provenance}; {candidate.language === "ar" ? "Arabic authorship remains unknown" : "authorship remains unknown"}</dd>
@@ -478,6 +539,62 @@ function RequestWorkspace() {
                         );
                       })}
                     </ol>}
+                    {selectedCandidate?.attachment !== null && selectedCandidate?.attachment !== undefined && (
+                      <section aria-label="Selected candidate preview" className="candidate-preview">
+                        <h3>Preview selected candidate</h3>
+                        <p><strong>Selected video:</strong> {selectedRequest.video.label} · locator {selectedRequest.video.id}
+                          (library {selectedRequest.video.libraryId})</p>
+                        <p><strong>Candidate:</strong> {selectedCandidate.id} · <strong>Content SHA-256:</strong> {selectedCandidate.contentHash}</p>
+                        <p><strong>Local subtitle filename:</strong> {selectedCandidate.attachment.filename}</p>
+                        <a className="primary-button" download={selectedCandidate.attachment.filename}
+                          href={selectedCandidate.attachment.downloadUrl}>Download selected candidate attachment</a>
+                        <h4>Load and check manually</h4>
+                        <p>1. In the existing desktop player, explicitly load the downloaded <strong>{selectedCandidate.attachment.filename}</strong> for the selected video.</p>
+                        <p>2. Check a targeted sample near the beginning, then one in the middle and one near the end.</p>
+                        <p>3. Record only what you observed; exhaustive review, automatic player control, and publication are not part of this step.</p>
+                        <p className="preview-boundary">This is a user report for the named client and samples. It is not proof of what the player loaded, full-dialogue coverage, synchronization outside the samples, human authorship, acceptance, or publication approval.</p>
+                        <div className="preview-observation-form">
+                          <label htmlFor="preview-client">Client used</label>
+                          <input id="preview-client" maxLength={200} value={previewClient}
+                            onChange={(event) => setPreviewClient(event.target.value)} />
+                          <label htmlFor="preview-outcome">Preview outcome</label>
+                          <select id="preview-outcome" value={previewOutcome}
+                            onChange={(event) => setPreviewOutcome(event.target.value as PreviewOutcome)}>
+                            <option value="usable">Usable in these samples</option>
+                            <option value="not-usable">Not usable in these samples</option>
+                            <option value="inconclusive">Inconclusive</option>
+                          </select>
+                          {(["beginning", "middle", "end"] as const).map((sample) => (
+                            <label key={sample} htmlFor={`preview-${sample}`}>{sample[0].toUpperCase() + sample.slice(1)} sample
+                              <select id={`preview-${sample}`} value={previewSample[sample]}
+                                onChange={(event) => setPreviewSample((current) => ({
+                                  ...current, [sample]: event.target.value as PreviewSampleStatus,
+                                }))}>
+                                <option value="checked">Checked</option>
+                                <option value="not-checked">Not checked</option>
+                                <option value="failed">Check failed</option>
+                              </select>
+                            </label>
+                          ))}
+                          <label htmlFor="preview-note">Observation note (optional)</label>
+                          <textarea id="preview-note" maxLength={2000} value={previewNote}
+                            onChange={(event) => setPreviewNote(event.target.value)} />
+                          <button className="secondary-button" disabled={observationInProgress || transitionConflict || previewClient.trim().length === 0}
+                            onClick={() => { void recordPreviewObservation(); }} type="button">
+                            {observationInProgress ? "Recording…" : "Record preview observation"}
+                          </button>
+                        </div>
+                        {(selectedRequest.previewObservations ?? []).length > 0 && (
+                          <section aria-label="Recorded preview observations">
+                            <h4>Recorded preview observations</h4>
+                            <ul>{(selectedRequest.previewObservations ?? []).map((observation) => (
+                              <li key={observation.id}>{observation.client} · {observation.outcome} · beginning {observation.sample.beginning}, middle {observation.sample.middle}, end {observation.sample.end}
+                                {observation.note === null ? "" : ` · ${observation.note}`}</li>
+                            ))}</ul>
+                          </section>
+                        )}
+                      </section>
+                    )}
                   </section>
                 )}
                 <button className="secondary-button" disabled={transitionInProgress || transitionConflict}

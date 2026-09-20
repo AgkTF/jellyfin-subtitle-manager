@@ -20,6 +20,13 @@ export interface SubtitleCandidate {
   destination: string;
   recommendationReason: string;
   identityEvidenceHash: string;
+  contentHash: string;
+}
+
+export interface SyntheticCandidateAttachment {
+  candidateId: string;
+  filename: string;
+  content: Buffer;
 }
 
 export type PreparationOutcome = "candidates-found" | "no-suitable-candidate" | "blocked" | "failed";
@@ -30,6 +37,7 @@ export interface SyntheticPreparation {
   nextActions: Array<"defer" | "retry">;
   candidates: SubtitleCandidate[];
   recommendedCandidateId: string | null;
+  attachments: SyntheticCandidateAttachment[];
 }
 
 /**
@@ -49,7 +57,23 @@ export function prepareSyntheticCandidates(
       : video.id.includes("failed-preparation")
         ? { outcome: "failed" as const, explanation: "Candidate preparation failed before a usable result was produced. No candidate was downloaded.", nextActions: ["defer", "retry"] as Array<"defer" | "retry"> }
         : { outcome: "candidates-found" as const, explanation: `Prepared bounded ${languageName} candidates for review.`, nextActions: ["defer"] as Array<"defer" | "retry"> };
+  const attachments: SyntheticCandidateAttachment[] = [];
   const candidates = ["primary", "alternate", "conservative"].map((variant, index) => {
+    const filename = `${video.id}.${language}.${variant}.srt`;
+    const content = Buffer.from([
+      "1",
+      "00:00:01,000 --> 00:00:03,000",
+      `Synthetic subtitle candidate ${index + 1} for ${video.label}.`,
+      "",
+      "2",
+      "00:05:00,000 --> 00:05:02,000",
+      `Synthetic ${languageName} middle sample for manual preview only.`,
+      "",
+      "3",
+      "00:10:00,000 --> 00:10:02,000",
+      "Synthetic subtitle ending sample.",
+      "",
+    ].join("\\n"), "utf8");
     const evidence = {
       id: `${video.id}-${language}-${variant}`,
       label: `Synthetic candidate ${index + 1}`,
@@ -69,7 +93,9 @@ export function prepareSyntheticCandidates(
       recommendationReason: index === 0
         ? `Recommended as the clearest ${languageName} association among the synthetic fixtures; this is not a quality or synchronization measurement.`
         : "Available as an alternative for human review; no measured timing or authorship evidence is available.",
+      contentHash: createHash("sha256").update(content).digest("hex"),
     };
+    attachments.push({ candidateId: evidence.id, filename, content });
     const identityEvidence = {
       libraryId: video.libraryId,
       videoId: video.id,
@@ -86,9 +112,11 @@ export function prepareSyntheticCandidates(
   });
 
   const availableCandidates = scenario.outcome === "candidates-found" ? candidates : [];
+  const availableCandidateIds = new Set(availableCandidates.map((candidate) => candidate.id));
   return {
     ...scenario,
     candidates: availableCandidates,
     recommendedCandidateId: availableCandidates[0]?.id ?? null,
+    attachments: attachments.filter((attachment) => availableCandidateIds.has(attachment.candidateId)),
   };
 }
