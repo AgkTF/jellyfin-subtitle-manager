@@ -20,6 +20,16 @@ interface RequestLists {
   deferred: RequestSummary[];
 }
 
+interface ReviewedPublicationContext {
+  requestId: string;
+  requestVersion: number;
+  video: RequestView["video"];
+  candidateId: string;
+  candidateContentHash: string;
+  candidateIdentityEvidenceHash: string;
+  destination: string;
+}
+
 const groups = ["active", "deferred", "finished"] as const;
 const groupLabels: Record<RequestGroup, string> = {
   active: "Active",
@@ -48,6 +58,99 @@ async function loadRequest(requestId: string): Promise<RequestView> {
   const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}`);
   if (!response.ok) throw new Error(`Request detail failed with ${response.status}`);
   return response.json() as Promise<RequestView>;
+}
+
+function DisabledPublicationReview({ request, candidate, candidateWasPreviewed }: {
+  request: RequestView;
+  candidate: PreparedCandidateView;
+  candidateWasPreviewed: boolean;
+}) {
+  const [reviewedContext, setReviewedContext] = useState<ReviewedPublicationContext | null>(null);
+  const [reviewWasInvalidated, setReviewWasInvalidated] = useState(false);
+  const reviewedContextIsCurrent = reviewedContext !== null &&
+    reviewedContext.requestId === request.id &&
+    reviewedContext.requestVersion === request.version &&
+    reviewedContext.video.libraryId === request.video.libraryId &&
+    reviewedContext.video.id === request.video.id &&
+    reviewedContext.candidateId === candidate.id &&
+    reviewedContext.candidateContentHash === candidate.contentHash &&
+    reviewedContext.candidateIdentityEvidenceHash === candidate.identityEvidenceHash &&
+    reviewedContext.destination === candidate.destination;
+
+  useEffect(() => {
+    if (reviewedContext !== null && !reviewedContextIsCurrent) {
+      setReviewedContext(null);
+      setReviewWasInvalidated(true);
+    }
+  }, [reviewedContext, reviewedContextIsCurrent]);
+
+  function reviewPublicationProposal() {
+    if (request.lifecycle !== "active" || candidate.attachment === null || !candidateWasPreviewed) return;
+    setReviewedContext({
+      requestId: request.id,
+      requestVersion: request.version,
+      video: request.video,
+      candidateId: candidate.id,
+      candidateContentHash: candidate.contentHash,
+      candidateIdentityEvidenceHash: candidate.identityEvidenceHash,
+      destination: candidate.destination,
+    });
+    setReviewWasInvalidated(false);
+  }
+
+  return <>
+    <section aria-label="Publication approval" className="publication-approval">
+      <span className="eyebrow">Publication</span>
+      <h3>Review exact publication approval</h3>
+      <p className="publication-state"><strong>Not published · publication unavailable in Slice 1</strong></p>
+      <p>Preview evidence above is separate from publication. Reviewing this context grants no approval and starts no operation.</p>
+      {reviewWasInvalidated && (
+        <p className="approval-invalidated" role="alert">
+          The previously reviewed publication context is no longer current. Review the current candidate, destination, and request version again.
+        </p>
+      )}
+      {reviewedContextIsCurrent && reviewedContext !== null && (
+        <div aria-label="Exact publication context" className="publication-context">
+          <dl>
+            <dt>Request</dt>
+            <dd>{reviewedContext.requestId} · Request version {reviewedContext.requestVersion}</dd>
+            <dt>Video evidence</dt>
+            <dd>{reviewedContext.video.label} · locator {reviewedContext.video.id} · library {reviewedContext.video.libraryId}</dd>
+            <dt>Candidate ID</dt>
+            <dd>{reviewedContext.candidateId}</dd>
+            <dt>Candidate content SHA-256</dt>
+            <dd className="publication-exact-value">{reviewedContext.candidateContentHash}</dd>
+            <dt>Candidate identity evidence hash</dt>
+            <dd className="publication-exact-value">{reviewedContext.candidateIdentityEvidenceHash}</dd>
+            <dt>Exact proposed destination</dt>
+            <dd className="publication-exact-value">{reviewedContext.destination}</dd>
+          </dl>
+          <p className="approval-boundary">Publication would add this exact candidate as a new sidecar without replacing any existing subtitle, without modifying the media file or changing track defaults. The destination must remain unoccupied.</p>
+          <button aria-describedby="publication-disabled-explanation" className="primary-button" disabled type="button">
+            Approve and publish — unavailable in Slice 1
+          </button>
+          <p id="publication-disabled-explanation">No publication operation has been created. Slice 1 cannot write a file or report publication success.</p>
+        </div>
+      )}
+      {!reviewedContextIsCurrent && (
+        <button className="secondary-button" disabled={!candidateWasPreviewed || request.lifecycle !== "active"}
+          onClick={reviewPublicationProposal} type="button">
+          Review publication approval
+        </button>
+      )}
+      {!candidateWasPreviewed && (
+        <p>Record preview evidence for this exact candidate before reviewing its publication context.</p>
+      )}
+      {request.lifecycle !== "active" && (
+        <p>Return this request to active attention before reviewing a new publication context.</p>
+      )}
+    </section>
+    <section aria-label="Client verification" className="client-verification">
+      <span className="eyebrow">Client verification</span>
+      <h3>Jellyfin verification unavailable</h3>
+      <p>No Jellyfin check is pending. Client verification starts only after a separately enabled publication has been verified; preview observations do not create this state.</p>
+    </section>
+  </>;
 }
 
 function RequestWorkspace() {
@@ -115,6 +218,13 @@ function RequestWorkspace() {
   ) ?? preparedCandidates.find((candidate) =>
     candidate.id === selectedRequest?.preparation?.recommendedCandidateId && candidate.rejection === null,
   ) ?? preparedCandidates.find((candidate) => candidate.rejection === null);
+  const selectedCandidateWasPreviewed = selectedRequest !== null && selectedCandidate !== undefined &&
+    (selectedRequest.previewObservations ?? []).some((observation) =>
+      observation.video.libraryId === selectedRequest.video.libraryId &&
+      observation.video.id === selectedRequest.video.id &&
+      observation.candidateId === selectedCandidate.id &&
+      observation.candidateContentHash === selectedCandidate.contentHash,
+    );
   const selectedLabel = groupLabels[selectedGroup];
   const selectedRequests = selectedGroup === "active" ? requestLists.active
     : selectedGroup === "deferred" ? requestLists.deferred : [];
@@ -596,6 +706,12 @@ function RequestWorkspace() {
                       </section>
                     )}
                   </section>
+                )}
+                {selectedCandidate?.attachment !== null && selectedCandidate?.attachment !== undefined && (
+                  <>
+                    <DisabledPublicationReview candidate={selectedCandidate}
+                      candidateWasPreviewed={selectedCandidateWasPreviewed} request={selectedRequest} />
+                  </>
                 )}
                 <button className="secondary-button" disabled={transitionInProgress || transitionConflict}
                   onClick={() => { void transitionRequest(selectedRequest.lifecycle === "active" ? "defer" : "retry"); }} type="button">

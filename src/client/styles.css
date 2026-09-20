@@ -558,6 +558,75 @@ h1 {
   resize: vertical;
 }
 
+.publication-approval,
+.client-verification {
+  min-width: 0;
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.65rem;
+  background: var(--panel);
+  overflow-wrap: anywhere;
+}
+
+.publication-state {
+  color: #943d38 !important;
+}
+
+.approval-invalidated {
+  padding: 0.65rem;
+  border-left: 3px solid #a96800;
+  background: #fff6df;
+}
+
+.publication-context {
+  min-width: 0;
+  margin-top: 0.75rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--panel-subtle);
+}
+
+.publication-context dl {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(10rem, max-content) minmax(0, 1fr);
+  gap: 0.35rem 1rem;
+}
+
+.publication-context dt {
+  font-weight: 700;
+}
+
+.publication-context dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.publication-context .primary-button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+.publication-exact-value {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.approval-boundary {
+  max-width: 70ch;
+  padding: 0.65rem;
+  border-left: 3px solid var(--accent);
+  background: #eef4fc;
+}
+
+.client-verification {
+  border-style: dashed;
+  background: var(--panel-subtle);
+}
+
 .request-detail .secondary-button {
   margin-top: 8px;
 }
@@ -725,6 +794,26 @@ h1 {
   .request-row > [role="cell"]:last-child {
     grid-column: 2;
     grid-row: 1;
+  }
+
+  .candidate-preparation dl,
+  .publication-context dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .candidate-preparation dd,
+  .publication-context dd {
+    margin-bottom: 0.5rem;
+  }
+
+  .candidate-preview,
+  .candidate-preparation {
+    overflow-wrap: anywhere;
+  }
+
+  .candidate-preview .primary-button {
+    max-width: 100%;
+    white-space: normal;
   }
 }
 
