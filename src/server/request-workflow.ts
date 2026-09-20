@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import Database from "better-sqlite3";
 
 import {
@@ -35,8 +37,36 @@ export interface CandidateRejection {
   reason: string;
 }
 
+export interface CandidateAttachment {
+  id: string;
+  filename: string;
+  contentHash: string;
+  downloadUrl: string;
+}
+
 export interface PreparedCandidateView extends SubtitleCandidate {
   rejection: CandidateRejection | null;
+  attachment: CandidateAttachment | null;
+}
+
+export type PreviewSampleStatus = "checked" | "not-checked" | "failed";
+export type PreviewOutcome = "usable" | "not-usable" | "inconclusive";
+
+export interface PreviewObservation {
+  id: string;
+  attachmentId: string;
+  video: VideoIdentity;
+  candidateId: string;
+  candidateContentHash: string;
+  client: string;
+  outcome: PreviewOutcome;
+  sample: {
+    beginning: PreviewSampleStatus;
+    middle: PreviewSampleStatus;
+    end: PreviewSampleStatus;
+  };
+  note: string | null;
+  recordedAt: string;
 }
 
 export interface RequestPreparationView {
@@ -50,6 +80,7 @@ export interface RequestPreparationView {
 export interface RequestView extends RequestSummary {
   lifecycleHistory: RequestLifecycleEntry[];
   preparation: RequestPreparationView | null;
+  previewObservations?: PreviewObservation[];
 }
 
 export interface RequestListView {
@@ -102,11 +133,34 @@ export type RequestCommand =
         identityEvidenceHash: string;
       };
       reason: string;
+    }
+  | {
+      type: "record-preview-observation";
+      request: {
+        id: string;
+        version: number;
+      };
+      attachmentId: string;
+      client: string;
+      outcome: PreviewOutcome;
+      sample: {
+        beginning: PreviewSampleStatus;
+        middle: PreviewSampleStatus;
+        end: PreviewSampleStatus;
+      };
+      note?: string;
     };
+
+export interface CandidateAttachmentDownload {
+  filename: string;
+  contentHash: string;
+  content: Buffer;
+}
 
 export interface RequestWorkflow {
   issue(command: RequestCommand): RequestView;
   getRequest(requestId: string): RequestView | undefined;
+  getCandidateAttachment(attachmentId: string): CandidateAttachmentDownload | undefined;
   listRequests(query: { lifecycle: RequestLifecycle }): RequestListView;
   close(): void;
 }
@@ -122,6 +176,13 @@ export class CandidateRejectionValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "CandidateRejectionValidationError";
+  }
+}
+
+export class PreviewObservationValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PreviewObservationValidationError";
   }
 }
 
@@ -144,6 +205,32 @@ interface CandidateRejectionRow {
   candidate_id: string;
   candidate_identity_hash: string;
   reason: string;
+}
+
+interface CandidateAttachmentRow {
+  attachment_id: string;
+  request_id: string;
+  candidate_id: string;
+  content_hash: string;
+  filename: string;
+  content: Buffer;
+}
+
+interface PreviewObservationRow {
+  observation_id: string;
+  attachment_id: string;
+  library_id: string;
+  video_id: string;
+  video_label: string;
+  candidate_id: string;
+  candidate_content_hash: string;
+  client: string;
+  outcome: PreviewOutcome;
+  beginning: PreviewSampleStatus;
+  middle: PreviewSampleStatus;
+  end: PreviewSampleStatus;
+  note: string | null;
+  recorded_at: string;
 }
 
 interface PreparationMigrationRow extends RequestRow {
@@ -220,6 +307,35 @@ export function openRequestWorkflow(options: {
       PRIMARY KEY (request_id, candidate_id, candidate_identity_hash)
     ) STRICT;
 
+    CREATE TABLE IF NOT EXISTS candidate_attachments (
+      attachment_id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL REFERENCES subtitle_requests(request_id),
+      candidate_id TEXT NOT NULL,
+      candidate_identity_hash TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      content BLOB NOT NULL,
+      UNIQUE (request_id, candidate_id, content_hash)
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS preview_observations (
+      observation_id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL REFERENCES subtitle_requests(request_id),
+      attachment_id TEXT NOT NULL,
+      library_id TEXT NOT NULL,
+      video_id TEXT NOT NULL,
+      video_label TEXT NOT NULL,
+      candidate_id TEXT NOT NULL,
+      candidate_content_hash TEXT NOT NULL,
+      client TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      beginning TEXT NOT NULL,
+      middle TEXT NOT NULL,
+      end TEXT NOT NULL,
+      note TEXT,
+      recorded_at TEXT NOT NULL
+    ) STRICT;
+
     INSERT OR IGNORE INTO request_lifecycle_history (request_id, version, lifecycle)
     SELECT request_id, version, lifecycle FROM subtitle_requests;
   `);
@@ -256,26 +372,27 @@ export function openRequestWorkflow(options: {
   database.transaction(() => {
     for (const row of preparationRows) {
       const stored = JSON.parse(row.candidates_json) as Array<
-        Omit<SubtitleCandidate, "identityEvidenceHash"> & {
+        Omit<SubtitleCandidate, "identityEvidenceHash" | "contentHash"> & {
           identityEvidenceHash?: string;
           evidenceHash?: string;
+          contentHash?: string;
         }
       >;
-      if (stored.every((candidate) => candidate.identityEvidenceHash !== undefined)) continue;
+      if (stored.every((candidate) => candidate.identityEvidenceHash !== undefined && candidate.contentHash !== undefined)) continue;
       const generated = prepareSyntheticCandidates(
         { libraryId: row.library_id, id: row.video_id, label: row.video_label },
         row.language,
       ).candidates;
       const migrated = stored.map((candidate) => {
-        if (candidate.identityEvidenceHash !== undefined) return candidate;
+        if (candidate.identityEvidenceHash !== undefined && candidate.contentHash !== undefined) return candidate;
         const { evidenceHash, ...candidateEvidence } = candidate;
-        const identityEvidenceHash = evidenceHash ?? generated.find(
-          (item) => item.id === candidate.id,
-        )?.identityEvidenceHash;
-        if (identityEvidenceHash === undefined) {
-          throw new Error(`Prepared candidate ${candidate.id} cannot be migrated to identity evidence`);
+        const generatedCandidate = generated.find((item) => item.id === candidate.id);
+        const identityEvidenceHash = evidenceHash ?? generatedCandidate?.identityEvidenceHash;
+        const contentHash = candidate.contentHash ?? generatedCandidate?.contentHash;
+        if (identityEvidenceHash === undefined || contentHash === undefined) {
+          throw new Error(`Prepared candidate ${candidate.id} cannot be migrated to durable candidate evidence`);
         }
-        return { ...candidateEvidence, identityEvidenceHash };
+        return { ...candidateEvidence, identityEvidenceHash, contentHash };
       });
       updatePreparationCandidates.run(JSON.stringify(migrated), row.request_id);
     }
@@ -352,14 +469,75 @@ export function openRequestWorkflow(options: {
       request_id, library_id, video_id, candidate_id, candidate_identity_hash, reason
     ) VALUES (?, ?, ?, ?, ?, ?)
   `);
+  const selectCandidateAttachments = database.prepare(`
+    SELECT attachment_id, request_id, candidate_id, content_hash, filename, content
+    FROM candidate_attachments
+    WHERE request_id = ?
+  `);
+  const insertCandidateAttachment = database.prepare(`
+    INSERT OR REPLACE INTO candidate_attachments (
+      attachment_id, request_id, candidate_id, candidate_identity_hash, content_hash, filename, content
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const deleteCandidateAttachments = database.prepare(`
+    DELETE FROM candidate_attachments WHERE request_id = ?
+  `);
+  const selectPreviewObservations = database.prepare(`
+    SELECT observation_id, attachment_id, library_id, video_id, video_label,
+      candidate_id, candidate_content_hash, client, outcome, beginning, middle, end, note, recorded_at
+    FROM preview_observations
+    WHERE request_id = ?
+    ORDER BY recorded_at, observation_id
+  `);
+  const insertPreviewObservation = database.prepare(`
+    INSERT INTO preview_observations (
+      observation_id, request_id, attachment_id, library_id, video_id, video_label,
+      candidate_id, candidate_content_hash, client, outcome, beginning, middle, end, note, recorded_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const selectCandidateAttachment = database.prepare(`
+    SELECT attachment_id, request_id, candidate_id, content_hash, filename, content
+    FROM candidate_attachments
+    WHERE attachment_id = ?
+  `);
 
   const readPreparationCandidates = (candidatesJson: string): SubtitleCandidate[] => {
     const candidates = JSON.parse(candidatesJson) as SubtitleCandidate[];
-    if (candidates.some((candidate) => candidate.identityEvidenceHash === undefined)) {
-      throw new Error("Prepared candidates were not migrated to identity evidence hashes");
+    if (candidates.some((candidate) => candidate.identityEvidenceHash === undefined || candidate.contentHash === undefined)) {
+      throw new Error("Prepared candidates were not migrated to durable evidence hashes");
     }
     return candidates;
   };
+
+  const storeCandidateAttachments = (
+    requestId: string,
+    candidates: SubtitleCandidate[],
+    attachments: ReturnType<typeof prepareSyntheticCandidates>["attachments"],
+  ) => {
+    const candidatesById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+    for (const attachment of attachments) {
+      const candidate = candidatesById.get(attachment.candidateId);
+      if (candidate === undefined) continue;
+      insertCandidateAttachment.run(
+        randomUUID(), requestId, candidate.id, candidate.identityEvidenceHash,
+        candidate.contentHash, attachment.filename, attachment.content,
+      );
+    }
+  };
+
+  database.transaction(() => {
+    for (const row of preparationRows) {
+      if (selectCandidateAttachments.all(row.request_id).length > 0) continue;
+      const preparation = prepareSyntheticCandidates(
+        { libraryId: row.library_id, id: row.video_id, label: row.video_label }, row.language,
+      );
+      const candidates = readPreparationCandidates(
+        (database.prepare("SELECT candidates_json FROM request_preparations WHERE request_id = ?")
+          .get(row.request_id) as { candidates_json: string }).candidates_json,
+      );
+      storeCandidateAttachments(row.request_id, candidates, preparation.attachments);
+    }
+  })();
 
   const readRequest = (requestId: string): RequestView | undefined => {
     const row = selectRequest.get(requestId) as RequestRow | undefined;
@@ -388,9 +566,22 @@ export function openRequestWorkflow(options: {
         reason: rejection.reason,
       },
     ]));
+    const attachmentRows = selectCandidateAttachments.all(requestId) as CandidateAttachmentRow[];
+    const attachments = new Map(attachmentRows.map((attachment) => [
+      `${attachment.candidate_id}\0${attachment.content_hash}`,
+      {
+        id: attachment.attachment_id,
+        filename: attachment.filename,
+        contentHash: attachment.content_hash,
+        downloadUrl: `/api/candidate-attachments/${encodeURIComponent(attachment.attachment_id)}`,
+      },
+    ]));
     const candidates = preparationCandidates?.map((candidate) => ({
       ...candidate,
       rejection: rejections.get(`${candidate.id}\0${candidate.identityEvidenceHash}`) ?? null,
+      attachment: rejections.has(`${candidate.id}\0${candidate.identityEvidenceHash}`)
+        ? null
+        : attachments.get(`${candidate.id}\0${candidate.contentHash}`) ?? null,
     })) ?? null;
     const originalRecommendation = preparationRow?.recommended_candidate_id;
     const preparationOutcome = preparationRow?.outcome;
@@ -408,7 +599,31 @@ export function openRequestWorkflow(options: {
       candidates,
       recommendedCandidateId: recommendationWasRejected ? null : originalRecommendation ?? null,
     };
-    return { ...toRequestSummary(row), lifecycleHistory, preparation };
+    const observationRows = selectPreviewObservations.all(requestId) as PreviewObservationRow[];
+    const previewObservations = observationRows.map((observation): PreviewObservation => ({
+      id: observation.observation_id,
+      attachmentId: observation.attachment_id,
+      video: {
+        libraryId: observation.library_id,
+        id: observation.video_id,
+        label: observation.video_label,
+      },
+      candidateId: observation.candidate_id,
+      candidateContentHash: observation.candidate_content_hash,
+      client: observation.client,
+      outcome: observation.outcome,
+      sample: {
+        beginning: observation.beginning,
+        middle: observation.middle,
+        end: observation.end,
+      },
+      note: observation.note,
+      recordedAt: observation.recorded_at,
+    }));
+    return {
+      ...toRequestSummary(row), lifecycleHistory, preparation,
+      ...(previewObservations.length === 0 ? {} : { previewObservations }),
+    };
   };
 
   const createRequest = database.transaction(
@@ -486,6 +701,7 @@ export function openRequestWorkflow(options: {
         preparation.explanation,
         JSON.stringify(preparation.nextActions),
       );
+      storeCandidateAttachments(request.id, preparation.candidates, preparation.attachments);
     },
   );
   const retryPreparation = database.transaction(
@@ -502,8 +718,56 @@ export function openRequestWorkflow(options: {
         JSON.stringify(preparation.candidates), preparation.recommendedCandidateId,
         preparation.outcome, preparation.explanation, JSON.stringify(preparation.nextActions), request.id,
       );
+      deleteCandidateAttachments.run(request.id);
+      storeCandidateAttachments(request.id, preparation.candidates, preparation.attachments);
     },
   );
+  const recordPreviewObservation = database.transaction(
+    (command: Extract<RequestCommand, { type: "record-preview-observation" }>) => {
+      const client = command.client.trim();
+      const note = command.note?.trim() ?? "";
+      const validOutcomes = new Set<PreviewOutcome>(["usable", "not-usable", "inconclusive"]);
+      const validSamples = new Set<PreviewSampleStatus>(["checked", "not-checked", "failed"]);
+      if (client.length === 0 || client.length > 200) {
+        throw new PreviewObservationValidationError("A preview client is required");
+      }
+      if (!validOutcomes.has(command.outcome) || !validSamples.has(command.sample.beginning) ||
+          !validSamples.has(command.sample.middle) || !validSamples.has(command.sample.end)) {
+        throw new PreviewObservationValidationError("Preview outcome and beginning, middle, and end sample statuses are required");
+      }
+      if (note.length > 2000) {
+        throw new PreviewObservationValidationError("Preview notes are limited to 2000 characters");
+      }
+      const row = selectRequest.get(command.request.id) as RequestRow | undefined;
+      if (row === undefined || row.version !== command.request.version) {
+        throw new RequestVersionConflictError();
+      }
+      const attachment = selectCandidateAttachment.get(command.attachmentId) as CandidateAttachmentRow | undefined;
+      if (attachment === undefined || attachment.request_id !== row.request_id) {
+        throw new PreviewObservationValidationError("Preview attachment is not owned by this request");
+      }
+      const preparationRow = selectPreparation.get(command.request.id) as { candidates_json: string } | undefined;
+      const candidate = preparationRow === undefined
+        ? undefined
+        : readPreparationCandidates(preparationRow.candidates_json).find((item) =>
+          item.id === attachment.candidate_id && item.contentHash === attachment.content_hash);
+      if (candidate === undefined) {
+        throw new PreviewObservationValidationError("Preview attachment is not a current prepared candidate");
+      }
+      const rejection = (selectCandidateRejections.all(command.request.id) as CandidateRejectionRow[]).some((item) =>
+        item.candidate_id === candidate.id && item.candidate_identity_hash === candidate.identityEvidenceHash);
+      if (rejection) {
+        throw new PreviewObservationValidationError("Rejected candidates cannot be previewed");
+      }
+      insertPreviewObservation.run(
+        randomUUID(), command.request.id, attachment.attachment_id,
+        row.library_id, row.video_id, row.video_label, candidate.id, candidate.contentHash,
+        client, command.outcome, command.sample.beginning, command.sample.middle, command.sample.end,
+        note.length === 0 ? null : note, new Date().toISOString(),
+      );
+    },
+  );
+
   const rejectPreparedCandidate = database.transaction(
     (command: Extract<RequestCommand, { type: "reject-candidate" }>) => {
       const reason = command.reason.trim();
@@ -559,6 +823,9 @@ export function openRequestWorkflow(options: {
         case "reject-candidate":
           rejectPreparedCandidate(command);
           break;
+        case "record-preview-observation":
+          recordPreviewObservation(command);
+          break;
       }
       const view = readRequest(requestId);
       if (view === undefined) {
@@ -569,6 +836,25 @@ export function openRequestWorkflow(options: {
 
     getRequest(requestId) {
       return readRequest(requestId);
+    },
+
+    getCandidateAttachment(attachmentId) {
+      const attachment = selectCandidateAttachment.get(attachmentId) as CandidateAttachmentRow | undefined;
+      if (attachment === undefined || attachment.request_id === undefined) return undefined;
+      const request = selectRequest.get(attachment.request_id) as RequestRow | undefined;
+      const preparation = selectPreparation.get(attachment.request_id) as { candidates_json: string } | undefined;
+      if (request === undefined || preparation === undefined) return undefined;
+      const candidate = readPreparationCandidates(preparation.candidates_json).find((item) =>
+        item.id === attachment.candidate_id && item.contentHash === attachment.content_hash);
+      if (candidate === undefined) return undefined;
+      const rejected = (selectCandidateRejections.all(attachment.request_id) as CandidateRejectionRow[]).some((item) =>
+        item.candidate_id === candidate.id && item.candidate_identity_hash === candidate.identityEvidenceHash);
+      if (rejected) return undefined;
+      return {
+        filename: attachment.filename,
+        contentHash: attachment.content_hash,
+        content: attachment.content,
+      };
     },
 
     listRequests(query) {

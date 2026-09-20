@@ -5,6 +5,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 
 import {
   CandidateRejectionValidationError,
+  PreviewObservationValidationError,
   RequestVersionConflictError,
   type RequestWorkflow,
 } from "./request-workflow.js";
@@ -38,6 +39,22 @@ interface RejectCandidateBody extends TransitionRequestBody {
   candidateId: string;
   identityEvidenceHash: string;
   reason: string;
+}
+
+interface PreviewObservationBody extends TransitionRequestBody {
+  attachmentId: string;
+  client: string;
+  outcome: "usable" | "not-usable" | "inconclusive";
+  sample: {
+    beginning: "checked" | "not-checked" | "failed";
+    middle: "checked" | "not-checked" | "failed";
+    end: "checked" | "not-checked" | "failed";
+  };
+  note?: string;
+}
+
+interface AttachmentParams {
+  attachmentId: string;
 }
 
 export function buildServer(options: ServerOptions = {}): FastifyInstance {
@@ -117,6 +134,76 @@ export function buildServer(options: ServerOptions = {}): FastifyInstance {
     server.get<{ Params: RequestParams }>("/api/requests/:requestId", async (request, reply) => {
       const view = workflow.getRequest(request.params.requestId);
       return view === undefined ? reply.code(404).send({ error: "Subtitle request was not found" }) : view;
+    });
+
+    server.get<{ Params: AttachmentParams }>("/api/candidate-attachments/:attachmentId", {
+      schema: {
+        params: {
+          type: "object",
+          required: ["attachmentId"],
+          properties: { attachmentId: { type: "string", minLength: 1, maxLength: 100 } },
+          additionalProperties: false,
+        },
+      },
+    }, async (request, reply) => {
+      const attachment = workflow.getCandidateAttachment(request.params.attachmentId);
+      if (attachment === undefined) {
+        return reply.code(404).send({ error: "Candidate attachment was not found" });
+      }
+      const filename = attachment.filename.replace(/[\\"\r\n]/g, "_");
+      return reply
+        .type("application/x-subrip")
+        .header("content-disposition", `attachment; filename="${filename}"`)
+        .header("x-content-sha256", attachment.contentHash)
+        .send(attachment.content);
+    });
+
+    server.post<{ Params: RequestParams; Body: PreviewObservationBody }>("/api/requests/:requestId/preview-observations", {
+      schema: {
+        body: {
+          type: "object",
+          required: ["version", "attachmentId", "client", "outcome", "sample"],
+          properties: {
+            version: { type: "integer", minimum: 1 },
+            attachmentId: { type: "string", minLength: 1, maxLength: 100 },
+            client: { type: "string", minLength: 1, maxLength: 200 },
+            outcome: { type: "string", enum: ["usable", "not-usable", "inconclusive"] },
+            sample: {
+              type: "object",
+              required: ["beginning", "middle", "end"],
+              properties: {
+                beginning: { type: "string", enum: ["checked", "not-checked", "failed"] },
+                middle: { type: "string", enum: ["checked", "not-checked", "failed"] },
+                end: { type: "string", enum: ["checked", "not-checked", "failed"] },
+              },
+              additionalProperties: false,
+            },
+            note: { type: "string", maxLength: 2000 },
+          },
+          additionalProperties: false,
+        },
+      },
+    }, async (request, reply) => {
+      try {
+        const view = workflow.issue({
+          type: "record-preview-observation",
+          request: { id: request.params.requestId, version: request.body.version },
+          attachmentId: request.body.attachmentId,
+          client: request.body.client,
+          outcome: request.body.outcome,
+          sample: request.body.sample,
+          note: request.body.note,
+        });
+        return reply.code(201).send(view);
+      } catch (error) {
+        if (error instanceof RequestVersionConflictError) {
+          return reply.code(409).send({ error: "Preview requires the current request version" });
+        }
+        if (error instanceof PreviewObservationValidationError) {
+          return reply.code(422).send({ error: error.message });
+        }
+        throw error;
+      }
     });
 
     server.post<{ Params: RequestParams; Body: TransitionRequestBody }>("/api/requests/:requestId/prepare", {
