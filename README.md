@@ -53,7 +53,10 @@ npm start
 ```
 
 The built server listens only on `127.0.0.1:3000` by default. `PORT` may select a
-different local port. For development, run `npm run dev:server` and
+different local port. It rejects non-loopback Host values and untrusted browser
+Origins; state-changing requests require the same-origin CSRF cookie/header pair.
+Candidate downloads use owned opaque IDs and attachment-only responses. For development,
+run `npm run dev:server` and
 `npm run dev:client` in separate terminals, then open Vite's printed URL (normally
 `http://127.0.0.1:5173`). Vite proxies `/api` to the loopback Fastify server on port
 3000; when using a custom API `PORT`, set the same value for **both** processes.

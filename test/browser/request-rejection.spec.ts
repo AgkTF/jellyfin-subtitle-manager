@@ -56,9 +56,10 @@ test("rejects one prepared candidate with a durable reason without silently reco
     return body.active[0];
   });
   const repeatedPreparation = await page.evaluate(async ({ requestId, version }) => {
+    const csrfToken = document.cookie.split("; ").find((cookie) => cookie.startsWith("subtitle_csrf="))?.slice("subtitle_csrf=".length);
     const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/prepare`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-csrf-token": csrfToken ?? "" },
       body: JSON.stringify({ version }),
     });
     return { status: response.status, body: await response.json() as unknown };

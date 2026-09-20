@@ -25,7 +25,7 @@ const test = base.extend<{ readOnlyJourney: void }>({
       expect(response.json()).toEqual({ active: [], deferred: [] });
       expect(requests.every((request) =>
         request === "GET /" || request === "GET /api/requests" ||
-        request === "GET /api/inventory" || request === "POST /api/inventory/refresh" ||
+        request === "GET /api/inventory" || request === "GET /api/csrf-token" || request === "POST /api/inventory/refresh" ||
         request.startsWith("GET /assets/") ||
         request === "GET /favicon.ico",
       )).toBe(true);
