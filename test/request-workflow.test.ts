@@ -252,7 +252,32 @@ test("preparation outcomes are distinct, explicit, and durable", (context) => {
   }
 });
 
-test("existing preparations and the earlier rejection schema migrate to durable identity evidence",  (context) => {
+test("repairs escaped next-action JSON left by the earlier preparation migration", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
+  const databasePath = join(directory, "workflow.sqlite");
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const workflow = openRequestWorkflow({ databasePath });
+  workflow.issue({
+    type: "create-request",
+    request: { id: "escaped-actions-request", version: 0 },
+    video: { libraryId: "library-synthetic", id: "quiet-orbit-2025", label: "Quiet Orbit (2025)" },
+    language: "ar",
+  });
+  workflow.issue({ type: "prepare-request", request: { id: "escaped-actions-request", version: 1 } });
+  workflow.close();
+
+  const database = new Database(databasePath);
+  database.prepare("UPDATE request_preparations SET next_actions_json = ? WHERE request_id = ?")
+    .run('[\\"defer\\"]', "escaped-actions-request");
+  database.close();
+
+  const reopened = openRequestWorkflow({ databasePath });
+  context.after(() => reopened.close());
+  assert.deepEqual(reopened.getRequest("escaped-actions-request")?.preparation?.nextActions, ["defer"]);
+});
+
+test("existing preparations and the earlier rejection schema migrate to durable identity evidence", (context) => {
   const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
   const databasePath = join(directory, "workflow.sqlite");
   context.after(() => rmSync(directory, { recursive: true, force: true }));

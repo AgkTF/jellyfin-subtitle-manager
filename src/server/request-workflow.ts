@@ -150,6 +150,16 @@ interface PreparationMigrationRow extends RequestRow {
   candidates_json: string;
 }
 
+function readNextActions(value: string): Array<"defer" | "retry"> {
+  try {
+    return JSON.parse(value) as Array<"defer" | "retry">;
+  } catch (error) {
+    const repaired = value.replace(/\\"/g, '"');
+    if (repaired === value) throw error;
+    return JSON.parse(repaired) as Array<"defer" | "retry">;
+  }
+}
+
 function toRequestSummary(row: RequestRow): RequestSummary {
   return {
     id: row.request_id,
@@ -387,7 +397,7 @@ export function openRequestWorkflow(options: {
     const preparationExplanation = preparationRow?.explanation;
     const preparationNextActions = preparationRow === undefined
       ? []
-      : JSON.parse(preparationRow.next_actions_json) as Array<"defer" | "retry">;
+      : readNextActions(preparationRow.next_actions_json);
     const recommendationWasRejected = candidates?.find(
       (candidate) => candidate.id === originalRecommendation,
     )?.rejection != null;
