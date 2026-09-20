@@ -10,6 +10,7 @@ import {
   CandidateRejectionValidationError,
   openRequestWorkflow,
   RequestVersionConflictError,
+  type RequestView,
 } from "../src/server/request-workflow.js";
 
 const syntheticRequest = {
@@ -29,6 +30,22 @@ const activeRequestView = {
   lifecycleHistory: [{ version: 1, lifecycle: "active" }],
   preparation: null,
 } as const;
+
+function evidenceSnapshot(view: RequestView | undefined) {
+  return {
+    candidates: view?.preparation?.candidates.map((candidate) => ({
+      id: candidate.id,
+      identityEvidenceHash: candidate.identityEvidenceHash,
+      contentHash: candidate.contentHash,
+      attachment: candidate.attachment === null ? null : {
+        id: candidate.attachment.id,
+        contentHash: candidate.attachment.contentHash,
+      },
+      rejection: candidate.rejection,
+    })),
+    previewObservations: view?.previewObservations,
+  };
+}
 
 test("a subtitle request remains active after the workflow is reopened", (context) => {
   const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
@@ -494,6 +511,75 @@ test("repeated creation for one video and language keeps one lifecycle history",
     lifecycleHistory: [{ version: 1, lifecycle: "active" }],
     preparation: null,
   });
+});
+
+test("deferring and retrying preserves prepared evidence, rejections, and preview observations", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "subtitle-request-workflow-"));
+  const databasePath = join(directory, "workflow.sqlite");
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+
+  const workflow = openRequestWorkflow({ databasePath });
+  workflow.issue({
+    type: "create-request",
+    request: { id: syntheticRequest.id, version: 0 },
+    video: syntheticRequest.video,
+    language: syntheticRequest.language,
+  });
+  const prepared = workflow.issue({
+    type: "prepare-request",
+    request: { id: syntheticRequest.id, version: 1 },
+  });
+  const candidates = prepared.preparation?.candidates ?? [];
+  assert.equal(candidates.length, 3);
+  const rejectedCandidate = candidates[0];
+  const previewedCandidate = candidates[1];
+  assert.ok(rejectedCandidate);
+  assert.ok(previewedCandidate?.attachment);
+
+  const rejected = workflow.issue({
+    type: "reject-candidate",
+    request: { id: syntheticRequest.id, version: 1 },
+    candidate: {
+      id: rejectedCandidate.id,
+      identityEvidenceHash: rejectedCandidate.identityEvidenceHash,
+    },
+    reason: "The opening sample is not suitable.",
+  });
+  const observed = workflow.issue({
+    type: "record-preview-observation",
+    request: { id: syntheticRequest.id, version: 1 },
+    attachmentId: previewedCandidate.attachment.id,
+    client: "Existing desktop player",
+    outcome: "inconclusive",
+    sample: { beginning: "checked", middle: "failed", end: "not-checked" },
+    note: "The middle sample needs another look.",
+  });
+
+  const evidenceBeforeDeferral = evidenceSnapshot({
+    ...rejected,
+    previewObservations: observed.previewObservations,
+  });
+
+  const deferred = workflow.issue({
+    type: "defer-request",
+    request: { id: syntheticRequest.id, version: 1 },
+  });
+  assert.equal(deferred.lifecycle, "deferred");
+  assert.deepEqual(evidenceSnapshot(deferred), evidenceBeforeDeferral);
+
+  const retried = workflow.issue({
+    type: "retry-request",
+    request: { id: syntheticRequest.id, version: 2 },
+  });
+  assert.equal(retried.lifecycle, "active");
+  assert.deepEqual(evidenceSnapshot(retried), evidenceBeforeDeferral);
+  workflow.close();
+
+  const reopened = openRequestWorkflow({ databasePath });
+  context.after(() => reopened.close());
+  const restored = reopened.getRequest(syntheticRequest.id);
+  assert.equal(restored?.lifecycle, "active");
+  assert.deepEqual(evidenceSnapshot(restored), evidenceBeforeDeferral);
 });
 
 test("recreating a subtitle request cannot overwrite the durable request", (context) => {
