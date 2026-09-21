@@ -1,3 +1,4 @@
+import type { OpenSubtitlesSearchIdentity } from "./candidate-preparation.js";
 import type {
   InventoryRefreshAttempt,
   InventoryRefreshFailure,
@@ -124,6 +125,8 @@ export interface SavedVideoSelection {
   libraryId: string;
   id: string;
   label: string;
+  savedVideoId: string;
+  openSubtitlesSearchIdentity?: OpenSubtitlesSearchIdentity;
 }
 
 export interface SavedInventoryAdapter {
@@ -169,6 +172,19 @@ export function openSyntheticSavedInventory(
         libraryId: inventory.source,
         id: identityId,
         label: video.identities[0].title,
+        savedVideoId: videoId,
+        ...(videoId === "quiet-orbit" && identityId === "quiet-orbit-2025"
+          ? {
+              openSubtitlesSearchIdentity: {
+                provider: "opensubtitles-v1" as const,
+                libraryId: inventory.source,
+                videoId,
+                savedIdentityId: identityId,
+                selectedFileEvidenceHash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                title: { kind: "movie-imdb" as const, imdbId: "1234567" },
+              },
+            }
+          : {}),
       };
     },
     async refresh() {

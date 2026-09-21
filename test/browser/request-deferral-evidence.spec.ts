@@ -12,7 +12,7 @@ async function createPreparedArabicRequest(page: Page): Promise<void> {
   await picker.getByRole("button", { name: "Create request" }).click();
   await page.getByRole("row", { name: /Quiet Orbit \(2025\).*Arabic.*Active/ }).click();
   await page.getByRole("region", { name: "Subtitle request detail" })
-    .getByRole("button", { name: "Prepare synthetic candidates" }).click();
+    .getByRole("button", { name: "Prepare candidates" }).click();
 }
 
 test("preserves candidate evidence through preview, deferral, retry, and restart", async ({ page, application }) => {

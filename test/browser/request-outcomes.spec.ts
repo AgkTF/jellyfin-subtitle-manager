@@ -12,7 +12,7 @@ async function createRequest(page: import("@playwright/test").Page, title: strin
   await picker.getByRole("button", { name: "Create request" }).click();
   await page.getByRole("row", { name: new RegExp(title.replace(/[()]/g, "\\$&")) }).click();
   const detail = page.getByRole("region", { name: "Subtitle request detail" });
-  await detail.getByRole("button", { name: "Prepare synthetic candidates" }).click();
+  await detail.getByRole("button", { name: "Prepare candidates" }).click();
   return detail;
 }
 

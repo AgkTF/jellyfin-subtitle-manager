@@ -7,6 +7,11 @@ import type { FastifyInstance } from "fastify";
 
 import { buildServer } from "../../src/server/app.js";
 import type { InventoryRefreshAttempt } from "../../src/server/inventory-contract.js";
+import {
+  createOpenSubtitlesPreparation,
+  type OpenSubtitlesHttpTransport,
+} from "../../src/server/opensubtitles-preparation.js";
+import { openPrivateCandidateStore } from "../../src/server/private-candidate-store.js";
 import { openRequestWorkflow, type RequestWorkflow } from "../../src/server/request-workflow.js";
 import { openSyntheticSavedInventory } from "../../src/server/saved-inventory.js";
 
@@ -23,12 +28,63 @@ interface Application {
   restart(): Promise<void>;
 }
 
-export const test = base.extend<{ application: Application; refreshScenario: RefreshScenario }>({
+export const test = base.extend<{
+  application: Application;
+  refreshScenario: RefreshScenario;
+  preparationMode: "synthetic" | "opensubtitles";
+}>({
   refreshScenario: [{ outcome: "success", delayMs: 100 }, { option: true }],
-  application: async ({ refreshScenario }, use) => {
+  preparationMode: ["synthetic", { option: true }],
+  application: async ({ refreshScenario, preparationMode }, use) => {
     const directory = await mkdtemp(path.join(tmpdir(), "subtitle-manager-"));
     const databasePath = path.join(directory, "workflow.sqlite");
-    let workflow = openRequestWorkflow({ databasePath });
+    const candidateFiles = preparationMode === "opensubtitles"
+      ? openPrivateCandidateStore({ root: path.join(directory, "candidate-files") })
+      : undefined;
+    const payload = Buffer.from("1\r\n00:00:01,000 --> 00:00:03,000\r\nFixture subtitle.\r\n", "utf8");
+    const transport: OpenSubtitlesHttpTransport = {
+      request(request) {
+        const url = new URL(request.url);
+        if (request.method === "GET" && url.hostname === "api.opensubtitles.com") {
+          return {
+            status: 200,
+            headers: { "content-type": "application/json" },
+            body: Buffer.from(JSON.stringify({
+              total_pages: 1, total_count: 1, per_page: 50, page: 1,
+              data: [{
+                id: "918273",
+                attributes: {
+                  language: "ar", release: "Quiet.Orbit.2025.1080p.WEB-DL",
+                  foreign_parts_only: false, hearing_impaired: false,
+                  machine_translated: false, ai_translated: false,
+                  files: [{ file_id: 456789, file_name: "Quiet.Orbit.2025.ar.srt" }],
+                },
+              }],
+            }), "utf8"),
+          };
+        }
+        if (request.method === "POST" && url.pathname === "/api/v1/download") {
+          return {
+            status: 200,
+            headers: { "content-type": "application/json" },
+            body: Buffer.from(JSON.stringify({ link: "https://fixture-payload.invalid/download/456789" }), "utf8"),
+          };
+        }
+        if (request.method === "GET" && url.hostname === "fixture-payload.invalid") {
+          return { status: 200, headers: { "content-type": "application/x-subrip" }, body: payload };
+        }
+        throw new Error(`Unexpected fixture HTTP request: ${request.method} ${request.url}`);
+      },
+    };
+    const preparation = candidateFiles === undefined ? undefined : createOpenSubtitlesPreparation({
+      transport,
+      candidateFiles,
+      apiKey: "browser-fixture-api-key",
+      token: "browser-fixture-token",
+      payloadOrigins: ["https://fixture-payload.invalid"],
+    });
+    const openWorkflow = () => openRequestWorkflow({ databasePath, preparation, candidateFiles });
+    let workflow = openWorkflow();
     const previous = openSyntheticSavedInventory().search("");
     const refresh = async (): Promise<InventoryRefreshAttempt> => {
       if (refreshScenario.delayMs !== undefined) {
@@ -72,7 +128,7 @@ export const test = base.extend<{ application: Application; refreshScenario: Ref
         server.server.closeAllConnections();
         await server.close();
         workflow.close();
-        workflow = openRequestWorkflow({ databasePath });
+        workflow = openWorkflow();
         server = buildServer({ clientRoot: path.resolve("dist/client"), inventory, workflow });
         server.addHook("onRequest", async (request) => {
           requests.push(`${request.method} ${request.url.split("?")[0]}`);
@@ -86,6 +142,7 @@ export const test = base.extend<{ application: Application; refreshScenario: Ref
       server.server.closeAllConnections();
       await server.close();
       workflow.close();
+      candidateFiles?.close();
       await rm(directory, { recursive: true, force: true });
     }
   },

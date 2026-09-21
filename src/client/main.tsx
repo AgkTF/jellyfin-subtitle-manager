@@ -596,11 +596,11 @@ function RequestWorkspace() {
                 {selectedRequest.lifecycle === "active" && selectedRequest.preparation === null && (
                   <section aria-label="Current request action" className="current-action-card">
                     <span className="action-kicker">Next action · prepare</span>
-                    <h3>Find bounded synthetic candidates</h3>
-                    <p>This local step records candidate evidence only. It does not publish a subtitle or contact a provider.</p>
+                    <h3>Find bounded subtitle candidates</h3>
+                    <p>This explicit step records candidate evidence only. Fixture-backed provider preparation remains private and does not publish a subtitle.</p>
                     <button className="primary-button" disabled={preparationInProgress || transitionConflict}
                       onClick={() => { void prepareRequest(); }} type="button">
-                      {preparationInProgress ? "Preparing…" : "Prepare synthetic candidates"}
+                      {preparationInProgress ? "Preparing…" : "Prepare candidates"}
                     </button>
                   </section>
                 )}
@@ -609,7 +609,9 @@ function RequestWorkspace() {
                     <h3>Preparation result</h3>
                     <p><strong>Outcome:</strong> {selectedRequest.preparation.outcome}</p>
                     <p>{selectedRequest.preparation.explanation}</p>
-                    <p>Provider and network activity: none. Only the selected candidate can be downloaded as an application-owned attachment.</p>
+                    <p>{selectedRequest.preparation.candidates.some((candidate) => candidate.provider !== undefined)
+                      ? "Provider activity used the configured synthetic HTTP transport; real provider traffic remains disabled."
+                      : "Provider and network activity: none."} Only the selected candidate can be downloaded as an application-owned attachment.</p>
                     {selectedRequest.preparation.nextActions.includes("retry") && selectedRequest.lifecycle === "active" && (
                       <button className="secondary-button" disabled={preparationInProgress || transitionConflict}
                         onClick={() => { void retryPreparation(); }} type="button">
@@ -650,6 +652,7 @@ function RequestWorkspace() {
                             <div className="candidate-facts">
                               <span>{languageLabel(candidate.language)} · {candidate.subtitleType}</span>
                               <span>{candidate.timing.status} timing</span>
+                              <span>{candidate.completeness.status} completeness</span>
                               <span className="is-warning">Authorship unknown</span>
                             </div>
                             <details className="candidate-evidence">
@@ -661,7 +664,11 @@ function RequestWorkspace() {
                                 <dt>File / release association</dt><dd>{candidate.file} · {candidate.release}</dd>
                                 <dt>Language / type</dt><dd>{languageLabel(candidate.language)} · {candidate.subtitleType}</dd>
                                 <dt>Provenance / authorship</dt><dd>{candidate.provenance}; {candidate.language === "ar" ? "Arabic authorship remains unknown" : "authorship remains unknown"}</dd>
+                                {candidate.provider !== undefined && <>
+                                  <dt>Provider identity</dt><dd>{candidate.provider.name} · subtitle {candidate.provider.subtitleId} · file {candidate.provider.fileId}</dd>
+                                </>}
                                 <dt>Timing evidence</dt><dd>{candidate.timing.status}: {candidate.timing.evidence} {candidate.timing.limits}</dd>
+                                <dt>Completeness evidence</dt><dd>{candidate.completeness.status}: {candidate.completeness.evidence} {candidate.completeness.limits}</dd>
                                 <dt>Proposed destination</dt><dd>{candidate.destination} · publication is not enabled</dd>
                               </dl>
                             </details>

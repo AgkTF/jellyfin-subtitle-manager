@@ -1,44 +1,9 @@
 import { createHash } from "node:crypto";
 
+import type { CandidatePreparation } from "./candidate-preparation.js";
 import type { SubtitleLanguage, VideoIdentity } from "./request-workflow.js";
 
-export interface SubtitleCandidate {
-  id: string;
-  label: string;
-  file: string;
-  release: string;
-  association: string;
-  language: SubtitleLanguage;
-  subtitleType: "text-based";
-  provenance: "unknown";
-  authorship: "unknown";
-  timing: {
-    status: "unmeasured";
-    evidence: string;
-    limits: string;
-  };
-  destination: string;
-  recommendationReason: string;
-  identityEvidenceHash: string;
-  contentHash: string;
-}
-
-export interface SyntheticCandidateAttachment {
-  candidateId: string;
-  filename: string;
-  content: Buffer;
-}
-
-export type PreparationOutcome = "candidates-found" | "no-suitable-candidate" | "blocked" | "failed";
-
-export interface SyntheticPreparation {
-  outcome: PreparationOutcome;
-  explanation: string;
-  nextActions: Array<"defer" | "retry">;
-  candidates: SubtitleCandidate[];
-  recommendedCandidateId: string | null;
-  attachments: SyntheticCandidateAttachment[];
-}
+export type { PreparationOutcome, SubtitleCandidate } from "./candidate-preparation.js";
 
 /**
  * Builds bounded fixture evidence only. This function deliberately has no
@@ -47,7 +12,7 @@ export interface SyntheticPreparation {
 export function prepareSyntheticCandidates(
   video: VideoIdentity,
   language: SubtitleLanguage,
-): SyntheticPreparation {
+): CandidatePreparation {
   const languageName = language === "ar" ? "Arabic" : "English";
   const destination = `/synthetic/subtitles/${video.id}.${language}.srt`;
   const scenario = video.id.includes("no-suitable-candidate")
@@ -57,7 +22,7 @@ export function prepareSyntheticCandidates(
       : video.id.includes("failed-preparation")
         ? { outcome: "failed" as const, explanation: "Candidate preparation failed before a usable result was produced. No candidate was downloaded.", nextActions: ["defer", "retry"] as Array<"defer" | "retry"> }
         : { outcome: "candidates-found" as const, explanation: `Prepared bounded ${languageName} candidates for review.`, nextActions: ["defer"] as Array<"defer" | "retry"> };
-  const attachments: SyntheticCandidateAttachment[] = [];
+  const attachments: CandidatePreparation["attachments"] = [];
   const candidates = ["primary", "alternate", "conservative"].map((variant, index) => {
     const filename = `${video.id}.${language}.${variant}.srt`;
     const content = Buffer.from([
@@ -88,6 +53,11 @@ export function prepareSyntheticCandidates(
         status: "unmeasured" as const,
         evidence: "No dialogue synchronization measurement was performed.",
         limits: "Structural and provider-style checks must not be described as measured dialogue synchronization.",
+      },
+      completeness: {
+        status: "unmeasured" as const,
+        evidence: "No full-dialogue coverage measurement was performed.",
+        limits: "Synthetic fixture structure does not establish full-dialogue coverage.",
       },
       destination: destination.replace(".srt", `-${variant}.srt`),
       recommendationReason: index === 0

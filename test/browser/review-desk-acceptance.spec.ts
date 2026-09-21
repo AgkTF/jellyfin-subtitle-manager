@@ -63,7 +63,7 @@ for (const viewport of [
     await expect(phases.getByText("2 · Publication")).toBeVisible();
     await expect(phases.getByText("3 · Client check")).toBeVisible();
 
-    await detail.getByRole("button", { name: "Prepare synthetic candidates" }).click();
+    await detail.getByRole("button", { name: "Prepare candidates" }).click();
     const candidates = detail.getByRole("region", { name: "Prepared subtitle candidates" });
     const publication = detail.getByRole("region", { name: "Publication approval" });
     const verification = detail.getByRole("region", { name: "Client verification" });
