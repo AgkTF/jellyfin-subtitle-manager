@@ -37,6 +37,7 @@ test("preserves candidate evidence through preview, deferral, retry, and restart
   await expect(candidates.getByRole("region", { name: "Recorded preview observations" }))
     .toContainText("Targeted samples remained usable.");
 
+  await secondCandidate.getByRole("button", { name: "Select Synthetic candidate 2" }).click();
   await secondCandidate.getByRole("textbox", { name: "Reason for rejecting Synthetic candidate 2" })
     .fill("The alternative is not suitable.");
   await secondCandidate.getByRole("button", { name: "Reject Synthetic candidate 2" }).click();
