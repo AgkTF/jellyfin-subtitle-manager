@@ -79,6 +79,8 @@ export type PreparationOutcome =
   | "malformed-provider-response"
   | "unsafe-content"
   | "provider-failed"
+  | "duplicate-candidate"
+  | "payload-budget-exhausted"
   | "run-deadline-exhausted"
   | "failed";
 
@@ -91,6 +93,15 @@ export interface CandidatePreparation {
   attachments: CandidateAttachmentMaterial[];
 }
 
+export interface CandidatePreparationRun {
+  /** Durably spends an attempt before the matching provider download-link call. */
+  reservePayloadAttempt(fileId: number): number | "duplicate" | "exhausted";
+}
+
 export interface CandidatePreparationAdapter {
-  prepare(video: PreparationVideo, language: SubtitleLanguage): CandidatePreparation;
+  prepare(
+    video: PreparationVideo,
+    language: SubtitleLanguage,
+    run?: CandidatePreparationRun,
+  ): CandidatePreparation;
 }
