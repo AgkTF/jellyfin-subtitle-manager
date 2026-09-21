@@ -79,8 +79,6 @@ export type PreparationOutcome =
   | "malformed-provider-response"
   | "unsafe-content"
   | "provider-failed"
-  | "duplicate-candidate"
-  | "payload-budget-exhausted"
   | "run-deadline-exhausted"
   | "failed";
 

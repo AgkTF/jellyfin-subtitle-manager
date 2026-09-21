@@ -691,7 +691,7 @@ function RequestWorkspace() {
                                 {candidate.provider !== undefined && <>
                                   <dt>Provider identity</dt><dd>{candidate.provider.name} · subtitle {candidate.provider.subtitleId} · file {candidate.provider.fileId}</dd>
                                   {candidate.provider.fromTrusted !== undefined && <>
-                                    <dt>Provider metadata</dt><dd>{candidate.provider.moviehashMatch ? "provider-reported movie-hash match" : "no provider-reported movie-hash match"} · {candidate.provider.hearingImpaired ? "hearing-impaired" : "standard dialogue"} · {candidate.provider.fromTrusted ? "trusted-source claim" : "no trusted-source claim"} · {candidate.provider.downloadCount} reported downloads</dd>
+                                    <dt>Provider metadata</dt><dd>{candidate.provider.moviehashMatch ? "provider-reported movie-hash match" : "no provider-reported movie-hash match"} · {candidate.provider.hearingImpaired ? "hearing-impaired claim" : "not hearing-impaired (provider-reported)"} · {candidate.provider.fromTrusted ? "trusted-source claim" : "no trusted-source claim"} · {candidate.provider.downloadCount} reported downloads</dd>
                                   </>}
                                 </>}
                                 <dt>Timing evidence</dt><dd>{candidate.timing.status}: {candidate.timing.evidence} {candidate.timing.limits}</dd>

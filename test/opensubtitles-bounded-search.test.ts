@@ -141,6 +141,22 @@ test("bounded pagination collects eligible files before deterministic payload se
   });
 });
 
+test("large numeric provider IDs retain exact ascending order", (context) => {
+  const transport = new RouteTransport((request) => {
+    const fallback = successfulDownloadRoute(request);
+    if (fallback !== undefined) return fallback;
+    return page(1, 1, [
+      result("9007199254740993", 2),
+      result("9007199254740992", 1),
+    ], 2);
+  });
+  withPreparation(context, transport, (preparation) => {
+    const prepared = preparation.prepare(identityVideo, "ar");
+    assert.equal(prepared.outcome, "candidates-found");
+    assert.equal(prepared.candidates[0].provider?.subtitleId, "9007199254740992");
+  });
+});
+
 test("empty bounded search is a durable no-candidates result and performs no hidden work after restart", (context) => {
   const directory = mkdtempSync(path.join(tmpdir(), "opensubtitles-empty-"));
   context.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -162,6 +178,17 @@ test("empty bounded search is a durable no-candidates result and performs no hid
   context.after(() => workflow.close());
   assert.equal(workflow.getRequest("request-empty")?.preparation?.outcome, "no-candidates");
   assert.equal(transport.requests.length, 1);
+});
+
+test("a result without movie-hash metadata remains eligible when no movie hash was submitted", (context) => {
+  const candidate = result("1", 1);
+  delete (candidate.attributes as Record<string, unknown>).moviehash_match;
+  const routed = new RouteTransport((request) => successfulDownloadRoute(request) ?? page(1, 1, [candidate]));
+  withPreparation(context, routed, (preparation) => {
+    const prepared = preparation.prepare(identityVideo, "ar");
+    assert.equal(prepared.outcome, "candidates-found");
+    assert.equal(prepared.candidates[0].provider?.moviehashMatch, false);
+  });
 });
 
 test("malformed pagination terminates without guessing defaults", (context) => {
@@ -256,6 +283,28 @@ test("the result inspection cap stops pagination without turning bounded complet
   withPreparation(context, transport, (preparation) => {
     assert.equal(preparation.prepare(identityVideo, "ar").outcome, "no-candidates");
     assert.equal(transport.requests.length, 1);
+  });
+});
+
+test("the 200-file inspection cap stops before another search page", (context) => {
+  const fiftyResults = Array.from({ length: 50 }, (_, resultIndex) => result(
+    String(resultIndex + 1),
+    resultIndex * 4 + 1,
+    {
+      files: Array.from({ length: 4 }, (_, fileIndex) => ({
+        file_id: resultIndex * 4 + fileIndex + 1,
+        file_name: `candidate-${resultIndex}-${fileIndex}.srt`,
+      })),
+    },
+  ));
+  const transport = new RouteTransport((request) => {
+    const fallback = successfulDownloadRoute(request);
+    if (fallback !== undefined) return fallback;
+    return page(1, 2, fiftyResults, 100);
+  });
+  withPreparation(context, transport, (preparation) => {
+    assert.equal(preparation.prepare(identityVideo, "ar").outcome, "candidates-found");
+    assert.equal(transport.requests.filter((request) => request.url.includes("/subtitles?")).length, 1);
   });
 });
 

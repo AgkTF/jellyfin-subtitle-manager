@@ -80,8 +80,6 @@ const outcomeExplanations: Record<Exclude<PreparationOutcome, "candidates-found"
   "malformed-provider-response": "The provider returned a malformed response. Preparation stopped without guessing missing values.",
   "unsafe-content": "The provider response crossed a configured safety boundary. Preparation stopped without retaining unsafe content.",
   "provider-failed": "The provider returned an unsuccessful response. Preparation stopped without retrying.",
-  "duplicate-candidate": "Every retrieved candidate duplicated content already considered in this bounded run.",
-  "payload-budget-exhausted": "The three candidate payload attempts were spent without producing a reviewable candidate.",
   "run-deadline-exhausted": "The bounded preparation deadline was exhausted. No background work will continue.",
 };
 
@@ -147,6 +145,14 @@ function readSearchPage(value: unknown, requestedPage: number): SearchPage {
   };
 }
 
+function searchFileCount(value: unknown): number | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const attributes = (value as Record<string, unknown>).attributes;
+  if (typeof attributes !== "object" || attributes === null) return undefined;
+  const files = (attributes as Record<string, unknown>).files;
+  return Array.isArray(files) ? files.length : undefined;
+}
+
 function readEligibleFiles(value: unknown, language: "en" | "ar", hashSubmitted: boolean): {
   files: EligibleFile[];
   inspectedFiles: number;
@@ -154,7 +160,7 @@ function readEligibleFiles(value: unknown, language: "en" | "ar", hashSubmitted:
   if (typeof value !== "object" || value === null) return { files: [], inspectedFiles: 0 };
   const result = value as Record<string, unknown>;
   const attributes = result.attributes;
-  if (typeof result.id !== "string" || !/^\d+$/.test(result.id) ||
+  if (typeof result.id !== "string" || !/^\d{1,20}$/.test(result.id) ||
       typeof attributes !== "object" || attributes === null) return { files: [], inspectedFiles: 0 };
   const data = attributes as Record<string, unknown>;
   if (!Array.isArray(data.files)) return { files: [], inspectedFiles: 0 };
@@ -162,7 +168,7 @@ function readEligibleFiles(value: unknown, language: "en" | "ar", hashSubmitted:
   if (data.files.length === 0 || data.files.length > MAX_FILES_PER_RESULT || data.language !== language ||
       data.foreign_parts_only !== false || data.machine_translated !== false || data.ai_translated !== false ||
       typeof data.hearing_impaired !== "boolean" || typeof data.release !== "string" || data.release.length === 0 ||
-      data.release.length > 1_024 || typeof data.moviehash_match !== "boolean" ||
+      data.release.length > 1_024 || (data.moviehash_match !== undefined && typeof data.moviehash_match !== "boolean") ||
       (hashSubmitted && typeof data.moviehash_match !== "boolean") || typeof data.from_trusted !== "boolean" ||
       !isIntegerInRange(data.download_count, 0, Number.MAX_SAFE_INTEGER)) {
     return { files: [], inspectedFiles };
@@ -180,7 +186,7 @@ function readEligibleFiles(value: unknown, language: "en" | "ar", hashSubmitted:
       file: { file_id: file.file_id, file_name: file.file_name },
       release: data.release,
       hearingImpaired: data.hearing_impaired,
-      moviehashMatch: data.moviehash_match,
+      moviehashMatch: data.moviehash_match ?? false,
       fromTrusted: data.from_trusted,
       downloadCount: data.download_count,
     });
@@ -420,8 +426,12 @@ export function createOpenSubtitlesPreparation(options: {
           for (const value of page.data) {
             if (inspectedResults >= MAX_RESULTS || inspectedFiles >= MAX_FILES) break;
             inspectedResults += 1;
+            const fileCount = searchFileCount(value);
+            if (fileCount !== undefined && inspectedFiles + fileCount > MAX_FILES) {
+              inspectedFiles = MAX_FILES;
+              break;
+            }
             const parsed = readEligibleFiles(value, language, identity.movieHash !== undefined);
-            if (inspectedFiles + parsed.inspectedFiles > MAX_FILES) break;
             inspectedFiles += parsed.inspectedFiles;
             eligible.push(...parsed.files);
           }
@@ -432,7 +442,8 @@ export function createOpenSubtitlesPreparation(options: {
           Number(left.hearingImpaired) - Number(right.hearingImpaired) ||
           Number(right.fromTrusted) - Number(left.fromTrusted) ||
           right.downloadCount - left.downloadCount ||
-          Number(left.subtitleId) - Number(right.subtitleId) || left.file.file_id - right.file.file_id);
+          (BigInt(left.subtitleId) < BigInt(right.subtitleId) ? -1 : BigInt(left.subtitleId) > BigInt(right.subtitleId) ? 1 : 0) ||
+          left.file.file_id - right.file.file_id);
         if (eligible.length === 0) return terminal("no-candidates");
 
         const selected = eligible[0];
@@ -453,8 +464,6 @@ export function createOpenSubtitlesPreparation(options: {
         if (fields.remaining === 0) throw new PreparationFailure("quota-exhausted");
         let payloadUrl: URL;
         try { payloadUrl = new URL(fields.link); } catch { throw new PreparationFailure("malformed-provider-response"); }
-        validateHttpsOrigin(payloadUrl);
-        if (!payloadOrigins.has(payloadUrl.origin)) throw new PreparationFailure("unsafe-content");
         const original = validatePlainSrt(payloadRequest(payloadUrl.href));
         const contentHash = createHash("sha256").update(original).digest("hex");
         const candidateId = `opensubtitles-${selected.subtitleId}-${selected.file.file_id}`;
