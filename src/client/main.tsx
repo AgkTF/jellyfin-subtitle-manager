@@ -73,7 +73,9 @@ function preparationOutcomeLabel(outcome: NonNullable<RequestView["preparation"]
 }
 
 function usedProviderTransport(preparation: NonNullable<RequestView["preparation"]>): boolean {
-  if (preparation.candidates.some((candidate) => candidate.provider !== undefined)) return true;
+  if (preparation.candidates.length > 0) {
+    return preparation.candidates.some((candidate) => candidate.provider !== undefined);
+  }
   return !new Set(["blocked", "no-suitable-candidate", "failed"]).has(preparation.outcome);
 }
 
