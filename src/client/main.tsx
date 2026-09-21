@@ -621,7 +621,12 @@ function RequestWorkspace() {
                         ? "No current recommendation; the prior recommendation was rejected."
                         : selectedRequest.preparation.candidates.find((candidate) =>
                           candidate.id === selectedRequest.preparation?.recommendedCandidateId)?.recommendationReason}</p>
-                      <p>{rejectedCandidateCount} rejected candidate{rejectedCandidateCount === 1 ? "" : "s"}</p>
+                      <div className="candidate-decision-summary">
+                        <strong>Candidate decisions</strong>
+                        <span>{rejectedCandidateCount === 0
+                          ? "No candidates have been rejected."
+                          : `${rejectedCandidateCount} rejected candidate${rejectedCandidateCount === 1 ? "" : "s"}. Rejected candidates remain excluded from recommendation.`}</span>
+                      </div>
                     </>}
                     {selectedRequest.preparation.candidates.length > 0 && <ul className="candidate-list">
                       {selectedRequest.preparation.candidates.map((candidate) => {
@@ -697,18 +702,23 @@ function RequestWorkspace() {
                         <p>3. Record only what you observed; exhaustive review, automatic player control, and publication are not part of this step.</p>
                         <p className="preview-boundary">This is a user report for the named client and samples. It is not proof of what the player loaded, full-dialogue coverage, synchronization outside the samples, human authorship, acceptance, or publication approval.</p>
                         <div className="preview-observation-form">
-                          <label htmlFor="preview-client">Client used</label>
-                          <input id="preview-client" maxLength={200} value={previewClient}
-                            onChange={(event) => setPreviewClient(event.target.value)} />
-                          <label htmlFor="preview-outcome">Preview outcome</label>
-                          <select id="preview-outcome" value={previewOutcome}
-                            onChange={(event) => setPreviewOutcome(event.target.value as PreviewOutcome)}>
-                            <option value="usable">Usable in these samples</option>
-                            <option value="not-usable">Not usable in these samples</option>
-                            <option value="inconclusive">Inconclusive</option>
-                          </select>
+                          <div className="preview-form-field">
+                            <label htmlFor="preview-client">Client used</label>
+                            <input id="preview-client" maxLength={200} value={previewClient}
+                              onChange={(event) => setPreviewClient(event.target.value)} />
+                          </div>
+                          <div className="preview-form-field">
+                            <label htmlFor="preview-outcome">Preview outcome</label>
+                            <select id="preview-outcome" value={previewOutcome}
+                              onChange={(event) => setPreviewOutcome(event.target.value as PreviewOutcome)}>
+                              <option value="usable">Usable in these samples</option>
+                              <option value="not-usable">Not usable in these samples</option>
+                              <option value="inconclusive">Inconclusive</option>
+                            </select>
+                          </div>
                           {(["beginning", "middle", "end"] as const).map((sample) => (
-                            <label key={sample} htmlFor={`preview-${sample}`}>{sample[0].toUpperCase() + sample.slice(1)} sample
+                            <div className="preview-form-field" key={sample}>
+                              <label htmlFor={`preview-${sample}`}>{sample[0].toUpperCase() + sample.slice(1)} sample</label>
                               <select id={`preview-${sample}`} value={previewSample[sample]}
                                 onChange={(event) => setPreviewSample((current) => ({
                                   ...current, [sample]: event.target.value as PreviewSampleStatus,
@@ -717,12 +727,14 @@ function RequestWorkspace() {
                                 <option value="not-checked">Not checked</option>
                                 <option value="failed">Check failed</option>
                               </select>
-                            </label>
+                            </div>
                           ))}
-                          <label htmlFor="preview-note">Observation note (optional)</label>
-                          <textarea id="preview-note" maxLength={2000} value={previewNote}
-                            onChange={(event) => setPreviewNote(event.target.value)} />
-                          <button className="secondary-button" disabled={observationInProgress || transitionConflict || previewClient.trim().length === 0}
+                          <div className="preview-form-field">
+                            <label htmlFor="preview-note">Observation note (optional)</label>
+                            <textarea id="preview-note" maxLength={2000} value={previewNote}
+                              onChange={(event) => setPreviewNote(event.target.value)} />
+                          </div>
+                          <button className="primary-button preview-submit" disabled={observationInProgress || transitionConflict || previewClient.trim().length === 0}
                             onClick={() => { void recordPreviewObservation(); }} type="button">
                             {observationInProgress ? "Recording…" : "Record preview observation"}
                           </button>

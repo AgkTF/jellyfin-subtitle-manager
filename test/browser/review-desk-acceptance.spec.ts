@@ -80,10 +80,26 @@ for (const viewport of [
     expect(await candidates.getByRole("list").evaluate((element) => getComputedStyle(element).listStyleType))
       .toBe("none");
 
+    await expect(candidates.getByText("Candidate decisions", { exact: true })).toBeVisible();
+    await expect(candidates.getByText("No candidates have been rejected.", { exact: true })).toBeVisible();
+
     const preview = candidates.getByRole("region", { name: "Selected candidate preview" });
     const previewOutcome = preview.getByLabel("Preview outcome");
     expect(await previewOutcome.evaluate((element) => getComputedStyle(element).appearance)).toBe("none");
     expect(await previewOutcome.evaluate((element) => getComputedStyle(element).backgroundImage)).not.toBe("none");
+    const bodyFont = await page.locator("body").evaluate((element) => getComputedStyle(element).fontFamily);
+    for (const fieldId of ["preview-client", "preview-outcome", "preview-beginning", "preview-middle", "preview-end", "preview-note"]) {
+      const field = page.locator(`#${fieldId}`);
+      const label = page.locator(`label[for="${fieldId}"]`);
+      const [fieldBox, labelBox] = await Promise.all([field.boundingBox(), label.boundingBox()]);
+      expect((fieldBox?.y ?? 0) - ((labelBox?.y ?? 0) + (labelBox?.height ?? 0))).toBeGreaterThanOrEqual(8);
+      expect(await field.evaluate((element) => getComputedStyle(element).fontFamily)).toBe(bodyFont);
+      expect(await field.evaluate((element) => getComputedStyle(element).fontSize)).toBe("12px");
+      await field.focus();
+      expect(await field.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe("none");
+    }
+    const recordButton = preview.getByRole("button", { name: "Record preview observation" });
+    expect(await recordButton.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe("rgb(37, 92, 168)");
     const downloadBox = await preview.getByRole("link", { name: "Download selected candidate attachment" }).boundingBox();
     const manualHeadingBox = await preview.getByRole("heading", { name: "Load and check manually" }).boundingBox();
     expect((manualHeadingBox?.y ?? 0) - ((downloadBox?.y ?? 0) + (downloadBox?.height ?? 0)))
