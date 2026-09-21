@@ -323,6 +323,27 @@ export function openRequestWorkflow(options: {
       next_actions_json TEXT NOT NULL DEFAULT '["defer"]'
     ) STRICT;
 
+    CREATE TABLE IF NOT EXISTS provider_preparation_runs (
+      run_id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL REFERENCES subtitle_requests(request_id),
+      request_version INTEGER NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('active', 'completed', 'abandoned')),
+      started_at TEXT NOT NULL,
+      completed_at TEXT
+    ) STRICT;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS provider_preparation_runs_one_active
+    ON provider_preparation_runs (request_id, request_version) WHERE state = 'active';
+
+    CREATE TABLE IF NOT EXISTS provider_payload_attempts (
+      run_id TEXT NOT NULL REFERENCES provider_preparation_runs(run_id),
+      attempt_number INTEGER NOT NULL CHECK (attempt_number BETWEEN 1 AND 3),
+      provider_file_id INTEGER NOT NULL,
+      reserved_at TEXT NOT NULL,
+      PRIMARY KEY (run_id, attempt_number),
+      UNIQUE (run_id, provider_file_id)
+    ) STRICT;
+
     CREATE TABLE IF NOT EXISTS candidate_rejections (
       request_id TEXT NOT NULL REFERENCES subtitle_requests(request_id),
       library_id TEXT NOT NULL,
@@ -559,6 +580,32 @@ export function openRequestWorkflow(options: {
   const deleteCandidateAttachments = database.prepare(`
     DELETE FROM candidate_attachments WHERE request_id = ?
   `);
+  const selectActivePreparationRun = database.prepare(`
+    SELECT run_id FROM provider_preparation_runs
+    WHERE request_id = ? AND request_version = ? AND state = 'active'
+  `);
+  const insertPreparationRun = database.prepare(`
+    INSERT INTO provider_preparation_runs (
+      run_id, request_id, request_version, state, started_at, completed_at
+    ) VALUES (?, ?, ?, 'active', ?, NULL)
+  `);
+  const abandonActivePreparationRuns = database.prepare(`
+    UPDATE provider_preparation_runs SET state = 'abandoned', completed_at = ?
+    WHERE request_id = ? AND request_version = ? AND state = 'active'
+  `);
+  const completePreparationRun = database.prepare(`
+    UPDATE provider_preparation_runs SET state = 'completed', completed_at = ?
+    WHERE run_id = ? AND state = 'active'
+  `);
+  const selectPayloadAttempts = database.prepare(`
+    SELECT attempt_number, provider_file_id FROM provider_payload_attempts
+    WHERE run_id = ? ORDER BY attempt_number
+  `);
+  const insertPayloadAttempt = database.prepare(`
+    INSERT INTO provider_payload_attempts (
+      run_id, attempt_number, provider_file_id, reserved_at
+    ) VALUES (?, ?, ?, ?)
+  `);
   const selectPreviewObservations = database.prepare(`
     SELECT observation_id, attachment_id, library_id, video_id, video_label,
       candidate_id, candidate_content_hash, client, outcome, beginning, middle, end, note, recorded_at
@@ -758,47 +805,61 @@ export function openRequestWorkflow(options: {
       insertLifecycleHistory.run(row.request_id, row.version, row.lifecycle);
     },
   );
-  const prepareActiveRequest = database.transaction(
-    (request: { id: string; version: number }) => {
-      const row = selectRequest.get(request.id) as RequestRow | undefined;
-      if (row === undefined || row.version !== request.version || row.lifecycle !== "active") {
-        throw new RequestVersionConflictError();
-      }
-      const existing = selectPreparation.get(request.id) as {
-        candidates_json: string;
-        recommended_candidate_id: string | null;
-        outcome: PreparationOutcome;
-        explanation: string;
-        next_actions_json: string;
-      } | undefined;
-      if (existing !== undefined) return;
-      const preparation = preparationAdapter.prepare(toPreparationVideo(row), row.language);
-      insertPreparation.run(
-        request.id,
-        JSON.stringify(preparation.candidates),
-        preparation.recommendedCandidateId,
-        preparation.outcome,
-        preparation.explanation,
-        JSON.stringify(preparation.nextActions),
-      );
-      storeCandidateAttachments(request.id, preparation.candidates, preparation.attachments);
-    },
-  );
-  const retryPreparation = database.transaction(
-    (request: { id: string; version: number }) => {
-      const row = selectRequest.get(request.id) as RequestRow | undefined;
-      if (row === undefined || row.version !== request.version || row.lifecycle !== "active") {
-        throw new RequestVersionConflictError();
-      }
-      const preparation = preparationAdapter.prepare(toPreparationVideo(row), row.language);
+  type PreparationMode = "initial" | "retry";
+  const openPreparationRun = database.transaction((requestId: string, version: number, mode: PreparationMode) => {
+    if (mode === "retry") abandonActivePreparationRuns.run(new Date().toISOString(), requestId, version);
+    const active = selectActivePreparationRun.get(requestId, version) as { run_id: string } | undefined;
+    if (active !== undefined) return active.run_id;
+    const runId = randomUUID();
+    insertPreparationRun.run(runId, requestId, version, new Date().toISOString());
+    return runId;
+  });
+  const reservePayloadAttempt = database.transaction((runId: string, fileId: number): number | "duplicate" | "exhausted" => {
+    const attempts = selectPayloadAttempts.all(runId) as Array<{
+      attempt_number: number;
+      provider_file_id: number;
+    }>;
+    if (attempts.some((attempt) => attempt.provider_file_id === fileId)) return "duplicate";
+    if (attempts.length >= 3) return "exhausted";
+    const attemptNumber = attempts.length + 1;
+    insertPayloadAttempt.run(runId, attemptNumber, fileId, new Date().toISOString());
+    return attemptNumber;
+  });
+  const runPreparation = (row: RequestRow, mode: PreparationMode): CandidatePreparation => {
+    const runId = openPreparationRun(row.request_id, row.version, mode);
+    return preparationAdapter.prepare(toPreparationVideo(row), row.language, {
+      reservePayloadAttempt(fileId) {
+        return reservePayloadAttempt(runId, fileId);
+      },
+    });
+  };
+  const persistPreparation = database.transaction((requestId: string, preparation: CandidatePreparation,
+    mode: PreparationMode, runId: string | undefined) => {
+    if (mode === "retry") {
       replacePreparation.run(
         JSON.stringify(preparation.candidates), preparation.recommendedCandidateId,
-        preparation.outcome, preparation.explanation, JSON.stringify(preparation.nextActions), request.id,
+        preparation.outcome, preparation.explanation, JSON.stringify(preparation.nextActions), requestId,
       );
-      deleteCandidateAttachments.run(request.id);
-      storeCandidateAttachments(request.id, preparation.candidates, preparation.attachments);
-    },
-  );
+      deleteCandidateAttachments.run(requestId);
+    } else {
+      insertPreparation.run(
+        requestId, JSON.stringify(preparation.candidates), preparation.recommendedCandidateId,
+        preparation.outcome, preparation.explanation, JSON.stringify(preparation.nextActions),
+      );
+    }
+    storeCandidateAttachments(requestId, preparation.candidates, preparation.attachments);
+    if (runId !== undefined) completePreparationRun.run(new Date().toISOString(), runId);
+  });
+  const applyPreparation = (request: { id: string; version: number }, mode: PreparationMode) => {
+    const row = selectRequest.get(request.id) as RequestRow | undefined;
+    if (row === undefined || row.version !== request.version || row.lifecycle !== "active") {
+      throw new RequestVersionConflictError();
+    }
+    if (mode === "initial" && selectPreparation.get(request.id) !== undefined) return;
+    const preparation = runPreparation(row, mode);
+    const active = selectActivePreparationRun.get(request.id, request.version) as { run_id: string } | undefined;
+    persistPreparation(request.id, preparation, mode, active?.run_id);
+  };
   const recordPreviewObservation = database.transaction(
     (command: Extract<RequestCommand, { type: "record-preview-observation" }>) => {
       const client = command.client.trim();
@@ -892,10 +953,10 @@ export function openRequestWorkflow(options: {
           retryDeferredRequest(command.request);
           break;
         case "prepare-request":
-          prepareActiveRequest(command.request);
+          applyPreparation(command.request, "initial");
           break;
         case "retry-preparation":
-          retryPreparation(command.request);
+          applyPreparation(command.request, "retry");
           break;
         case "reject-candidate":
           rejectPreparedCandidate(command);

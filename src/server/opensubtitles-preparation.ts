@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { performance } from "node:perf_hooks";
+import { gunzipSync, inflateRawSync } from "node:zlib";
 
 import type {
   CandidatePreparation,
   CandidatePreparationAdapter,
+  CandidatePreparationRun,
   OpenSubtitlesSearchIdentity,
   PreparationOutcome,
   ProviderTitleIdentity,
@@ -17,20 +19,31 @@ export interface OpenSubtitlesHttpRequest {
   url: string;
   headers: Record<string, string>;
   body?: Buffer;
+  deadlines?: {
+    connectMs: number;
+    headersMs: number;
+    readIdleMs: number;
+    overallMs: number;
+  };
 }
 
 export interface OpenSubtitlesHttpResponse {
   status: number;
-  headers: Record<string, string | undefined>;
-  body: Buffer;
+  headers: Record<string, string | string[] | undefined>;
+  body: Buffer | Iterable<Buffer>;
+  trailers?: Record<string, string | string[] | undefined>;
 }
 
 export interface OpenSubtitlesHttpTransport {
+  /** Enforces request.deadlines while connecting, receiving headers, and consuming body chunks. */
   request(request: OpenSubtitlesHttpRequest): OpenSubtitlesHttpResponse;
 }
 
 export class OpenSubtitlesTransportError extends Error {
-  constructor(readonly kind: "timeout" | "transport") {
+  constructor(
+    readonly kind: "timeout" | "transport",
+    readonly phase?: "connect" | "headers" | "read-idle" | "overall",
+  ) {
     super(kind === "timeout" ? "OpenSubtitles request timed out" : "OpenSubtitles transport failed");
     this.name = "OpenSubtitlesTransportError";
   }
@@ -60,7 +73,12 @@ interface SearchPage {
 
 const API_ORIGIN = "https://api.opensubtitles.com";
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_PAYLOAD_TRANSFER_BYTES = 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
+const MAX_HEADER_BYTES = 16 * 1024;
+const MAX_HEADER_FIELDS = 64;
+const MAX_HEADER_FIELD_BYTES = 8 * 1024;
+const MAX_PAYLOAD_ATTEMPTS = 3;
 const MAX_SEARCH_PAGES = 3;
 const MAX_RESULTS = 100;
 const MAX_FILES = 200;
@@ -80,6 +98,8 @@ const outcomeExplanations: Record<Exclude<PreparationOutcome, "candidates-found"
   "malformed-provider-response": "The provider returned a malformed response. Preparation stopped without guessing missing values.",
   "unsafe-content": "The provider response crossed a configured safety boundary. Preparation stopped without retaining unsafe content.",
   "provider-failed": "The provider returned an unsuccessful response. Preparation stopped without retrying.",
+  "duplicate-candidate": "The provider payload duplicated a candidate already considered in this run.",
+  "payload-budget-exhausted": "Three candidate payload attempts were spent. No fourth download was requested.",
   "run-deadline-exhausted": "The bounded preparation deadline was exhausted. No background work will continue.",
 };
 
@@ -102,7 +122,107 @@ function terminal(outcome: PreparationFailure["outcome"]): CandidatePreparation 
 
 function header(response: OpenSubtitlesHttpResponse, name: string): string | undefined {
   const entry = Object.entries(response.headers).find(([key]) => key.toLowerCase() === name);
-  return entry?.[1];
+  return typeof entry?.[1] === "string" ? entry[1] : undefined;
+}
+
+function validateHeaders(response: OpenSubtitlesHttpResponse, unsafeOutcome: PreparationFailure["outcome"]): void {
+  const entries = Object.entries(response.headers);
+  if (entries.length > MAX_HEADER_FIELDS || response.trailers !== undefined && Object.keys(response.trailers).length > 0) {
+    throw new PreparationFailure(unsafeOutcome);
+  }
+  const normalizedNames = new Set<string>();
+  let total = 2;
+  for (const [name, rawValue] of entries) {
+    const normalizedName = name.toLowerCase();
+    const values = Array.isArray(rawValue) ? rawValue : rawValue === undefined ? [] : [rawValue];
+    const hasControlValue = values.length !== 1 || [...values[0]].some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code < 32 || code === 127;
+    });
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || normalizedNames.has(normalizedName) || hasControlValue) {
+      throw new PreparationFailure(unsafeOutcome);
+    }
+    normalizedNames.add(normalizedName);
+    const bytes = Buffer.byteLength(name) + Buffer.byteLength(values[0]);
+    if (bytes > MAX_HEADER_FIELD_BYTES) throw new PreparationFailure(unsafeOutcome);
+    total += bytes + 4;
+  }
+  if (total > MAX_HEADER_BYTES) throw new PreparationFailure(unsafeOutcome);
+}
+
+function readTransferBody(response: OpenSubtitlesHttpResponse, maximum: number, outcome: PreparationFailure["outcome"]): Buffer {
+  const declared = header(response, "content-length");
+  if (declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > maximum)) {
+    throw new PreparationFailure(outcome);
+  }
+  const chunks = Buffer.isBuffer(response.body) ? [response.body] : response.body;
+  const collected: Buffer[] = [];
+  let length = 0;
+  for (const chunk of chunks) {
+    if (!Buffer.isBuffer(chunk)) throw new PreparationFailure(outcome);
+    length += chunk.length;
+    if (length > maximum) throw new PreparationFailure(outcome);
+    collected.push(chunk);
+  }
+  if (declared !== undefined && Number(declared) !== length) {
+    throw new PreparationFailure(outcome);
+  }
+  return Buffer.concat(collected, length);
+}
+
+function gzipDeflateOffset(value: Buffer): number {
+  if (value.length < 18 || value[0] !== 0x1f || value[1] !== 0x8b || value[2] !== 8 || (value[3] & 0xe0) !== 0) {
+    throw new Error("invalid gzip header");
+  }
+  const flags = value[3];
+  let offset = 10;
+  const requireBytes = (count: number) => {
+    if (offset + count > value.length - 8) throw new Error("truncated gzip header");
+  };
+  if ((flags & 0x04) !== 0) {
+    requireBytes(2);
+    const length = value.readUInt16LE(offset);
+    offset += 2;
+    requireBytes(length);
+    offset += length;
+  }
+  for (const flag of [0x08, 0x10]) {
+    if ((flags & flag) === 0) continue;
+    while (offset < value.length - 8 && value[offset] !== 0) offset += 1;
+    requireBytes(1);
+    offset += 1;
+  }
+  if ((flags & 0x02) !== 0) {
+    requireBytes(2);
+    offset += 2;
+  }
+  return offset;
+}
+
+function decodeSingleGzip(transfer: Buffer, decodedMaximum: number): Buffer {
+  const offset = gzipDeflateOffset(transfer);
+  const inflated = inflateRawSync(transfer.subarray(offset), {
+    info: true,
+    maxOutputLength: decodedMaximum + 1,
+  }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+  if (offset + inflated.engine.bytesWritten + 8 !== transfer.length) throw new Error("multiple or trailing gzip data");
+  const decoded = gunzipSync(transfer, { maxOutputLength: decodedMaximum + 1 });
+  if (decoded.length > decodedMaximum) throw new Error("decoded gzip exceeds limit");
+  return decoded;
+}
+
+function decodeHttpBody(response: OpenSubtitlesHttpResponse, transferMaximum: number, decodedMaximum: number,
+  outcome: PreparationFailure["outcome"]): Buffer {
+  validateHeaders(response, outcome);
+  const transfer = readTransferBody(response, transferMaximum, outcome);
+  const coding = header(response, "content-encoding")?.trim().toLowerCase();
+  if (coding === undefined || coding === "" || coding === "identity") return transfer;
+  if (coding !== "gzip") throw new PreparationFailure(outcome);
+  try {
+    return decodeSingleGzip(transfer, decodedMaximum);
+  } catch {
+    throw new PreparationFailure(outcome);
+  }
 }
 
 function mapHttpFailure(status: number): PreparationFailure {
@@ -116,9 +236,9 @@ function decodeJson(response: OpenSubtitlesHttpResponse): unknown {
   if (!jsonContentType.test(header(response, "content-type") ?? "")) {
     throw new PreparationFailure("malformed-provider-response");
   }
-  if (response.body.length > MAX_JSON_BYTES) throw new PreparationFailure("malformed-provider-response");
+  const body = decodeHttpBody(response, MAX_JSON_BYTES, MAX_JSON_BYTES, "malformed-provider-response");
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(response.body)) as unknown;
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as unknown;
   } catch {
     throw new PreparationFailure("malformed-provider-response");
   }
@@ -266,8 +386,13 @@ function readRedirect(response: OpenSubtitlesHttpResponse, currentUrl: string): 
     throw new PreparationFailure("unsafe-content");
   }
   try {
-    return new URL(location, currentUrl);
-  } catch {
+    const resolved = new URL(location, currentUrl);
+    if (resolved.href.length > 2_048 || !/^[\x20-\x7e]+$/.test(resolved.href)) {
+      throw new PreparationFailure("unsafe-content");
+    }
+    return resolved;
+  } catch (error) {
+    if (error instanceof PreparationFailure) throw error;
     throw new PreparationFailure("unsafe-content");
   }
 }
@@ -283,12 +408,17 @@ function validatePlainSrt(response: OpenSubtitlesHttpResponse): Buffer {
   if (response.status < 200 || response.status >= 300) throw mapHttpFailure(response.status);
   const rawContentType = header(response, "content-type")?.split(";", 1)[0].trim().toLowerCase();
   if (rawContentType !== undefined && !payloadContentTypes.has(rawContentType)) throw new PreparationFailure("unsafe-content");
-  const contentEncoding = header(response, "content-encoding")?.trim().toLowerCase();
-  if (contentEncoding !== undefined && contentEncoding !== "identity") throw new PreparationFailure("unsafe-content");
-  if (response.body.length === 0 || response.body.length > MAX_PAYLOAD_BYTES) throw new PreparationFailure("unsafe-content");
+  const body = decodeHttpBody(response, MAX_PAYLOAD_TRANSFER_BYTES, MAX_PAYLOAD_BYTES, "unsafe-content");
+  if (body.length === 0 || body.length > MAX_PAYLOAD_BYTES) throw new PreparationFailure("unsafe-content");
+  if (body.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) ||
+      body.subarray(0, 2).equals(Buffer.from([0x1f, 0x8b])) ||
+      body.subarray(0, 6).toString("ascii") === "Rar!\u001a\u0007" ||
+      body.subarray(0, 6).equals(Buffer.from("7z\xbc\xaf\u0027\u001c", "latin1"))) {
+    throw new PreparationFailure("unsafe-content");
+  }
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(response.body);
+    text = new TextDecoder("utf-8", { fatal: true }).decode(body);
   } catch {
     throw new PreparationFailure("unsafe-content");
   }
@@ -323,7 +453,7 @@ function validatePlainSrt(response: OpenSubtitlesHttpResponse): Buffer {
     previousNumber = number;
     previousStart = start;
   }
-  return response.body;
+  return body;
 }
 
 function safeFilename(value: string): string {
@@ -351,7 +481,7 @@ export function createOpenSubtitlesPreparation(options: {
   const now = options.monotonicNow ?? (() => performance.now());
 
   return {
-    prepare(video, language) {
+    prepare(video, language, run?: CandidatePreparationRun) {
       const identity = video.openSubtitlesSearchIdentity;
       if (identity === undefined || !hasValidIdentity(identity, video) || options.apiKey.length === 0 ||
           options.token.length === 0 || payloadOrigins.size === 0) return terminal("blocked");
@@ -361,8 +491,13 @@ export function createOpenSubtitlesPreparation(options: {
       };
       const request = (httpRequest: OpenSubtitlesHttpRequest) => {
         checkDeadline();
+        const requestedAt = now();
         try {
           const response = options.transport.request(httpRequest);
+          validateHeaders(response, "unsafe-content");
+          if (httpRequest.deadlines !== undefined && now() - requestedAt >= httpRequest.deadlines.overallMs) {
+            throw new PreparationFailure("timed-out");
+          }
           checkDeadline();
           return response;
         } catch (error) {
@@ -378,28 +513,37 @@ export function createOpenSubtitlesPreparation(options: {
         authorization: `Bearer ${options.token}`,
         "user-agent": "jellyfin-subtitle-manager/0.1.0",
       };
+      const apiDeadlines = { connectMs: 3_000, headersMs: 7_000, readIdleMs: 5_000, overallMs: 15_000 };
+      const payloadDeadlines = { connectMs: 5_000, headersMs: 10_000, readIdleMs: 10_000, overallMs: 30_000 };
       const searchRequest = (url: string) => {
-        let response = request({ method: "GET", url, headers: apiHeaders });
+        let response = request({ method: "GET", url, headers: apiHeaders, deadlines: apiDeadlines });
         if (REDIRECT_STATUSES.has(response.status)) {
           const redirect = readRedirect(response, url);
           validateHttpsOrigin(redirect);
           if (redirect.origin !== API_ORIGIN) throw new PreparationFailure("unsafe-content");
-          response = request({ method: "GET", url: redirect.href, headers: apiHeaders });
+          response = request({ method: "GET", url: redirect.href, headers: apiHeaders, deadlines: apiDeadlines });
           if (REDIRECT_STATUSES.has(response.status)) throw new PreparationFailure("unsafe-content");
         }
         return response;
       };
       const payloadRequest = (url: string) => {
-        const current = new URL(url);
-        validateHttpsOrigin(current);
-        if (!payloadOrigins.has(current.origin)) throw new PreparationFailure("unsafe-content");
-        const response = request({
-          method: "GET",
-          url: current.href,
-          headers: { "user-agent": "jellyfin-subtitle-manager/0.1.0" },
-        });
-        if (REDIRECT_STATUSES.has(response.status)) throw new PreparationFailure("unsafe-content");
-        return response;
+        let current: URL;
+        try { current = new URL(url); } catch { throw new PreparationFailure("malformed-provider-response"); }
+        for (let redirects = 0; redirects <= 2; redirects += 1) {
+          validateHttpsOrigin(current);
+          if (!payloadOrigins.has(current.origin)) throw new PreparationFailure("unsafe-content");
+          const response = request({
+            method: "GET",
+            url: current.href,
+            headers: { "user-agent": "jellyfin-subtitle-manager/0.1.0" },
+            deadlines: payloadDeadlines,
+          });
+          if (!REDIRECT_STATUSES.has(response.status)) return response;
+          validateHeaders(response, "unsafe-content");
+          if (redirects === 2) throw new PreparationFailure("unsafe-content");
+          current = readRedirect(response, current.href);
+        }
+        throw new PreparationFailure("unsafe-content");
       };
 
       try {
@@ -446,72 +590,95 @@ export function createOpenSubtitlesPreparation(options: {
           left.file.file_id - right.file.file_id);
         if (eligible.length === 0) return terminal("no-candidates");
 
-        const selected = eligible[0];
-        const downloadResponse = request({
-          method: "POST",
-          url: `${API_ORIGIN}/api/v1/download`,
-          headers: { ...apiHeaders, "content-type": "application/json" },
-          body: Buffer.from(JSON.stringify({ file_id: selected.file.file_id, sub_format: "srt" }), "utf8"),
-        });
-        if (REDIRECT_STATUSES.has(downloadResponse.status)) throw new PreparationFailure("unsafe-content");
-        const download = decodeJson(downloadResponse);
-        if (typeof download !== "object" || download === null) throw new PreparationFailure("malformed-provider-response");
-        const fields = download as Record<string, unknown>;
-        if (typeof fields.link !== "string" || (fields.remaining !== undefined &&
-            !isIntegerInRange(fields.remaining, 0, Number.MAX_SAFE_INTEGER))) {
-          throw new PreparationFailure("malformed-provider-response");
+        let localAttemptCount = 0;
+        const reservedFileIds = new Set<number>();
+        let lastCandidateFailure: PreparationFailure | undefined;
+        let sawDurableDuplicate = false;
+        for (const selected of eligible) {
+          if (reservedFileIds.has(selected.file.file_id)) continue;
+          reservedFileIds.add(selected.file.file_id);
+          const attempt = run === undefined
+            ? (localAttemptCount += 1) <= MAX_PAYLOAD_ATTEMPTS ? localAttemptCount : "exhausted"
+            : run.reservePayloadAttempt(selected.file.file_id);
+          if (attempt === "duplicate") {
+            sawDurableDuplicate = true;
+            continue;
+          }
+          if (attempt === "exhausted" || attempt > MAX_PAYLOAD_ATTEMPTS) return terminal("payload-budget-exhausted");
+          try {
+            const downloadResponse = request({
+              method: "POST",
+              url: `${API_ORIGIN}/api/v1/download`,
+              headers: { ...apiHeaders, "content-type": "application/json" },
+              body: Buffer.from(JSON.stringify({ file_id: selected.file.file_id, sub_format: "srt" }), "utf8"),
+              deadlines: apiDeadlines,
+            });
+            if (REDIRECT_STATUSES.has(downloadResponse.status)) throw new PreparationFailure("unsafe-content");
+            const download = decodeJson(downloadResponse);
+            if (typeof download !== "object" || download === null) throw new PreparationFailure("malformed-provider-response");
+            const fields = download as Record<string, unknown>;
+            if (typeof fields.link !== "string" || fields.link.length > 2_048 || !/^[\x20-\x7e]+$/.test(fields.link) ||
+                (fields.remaining !== undefined && !isIntegerInRange(fields.remaining, 0, Number.MAX_SAFE_INTEGER))) {
+              throw new PreparationFailure("malformed-provider-response");
+            }
+            if (fields.remaining === 0) throw new PreparationFailure("quota-exhausted");
+            const original = validatePlainSrt(payloadRequest(fields.link));
+            const contentHash = createHash("sha256").update(original).digest("hex");
+            const candidateId = `opensubtitles-${selected.subtitleId}-${selected.file.file_id}`;
+            const provider = {
+              name: "opensubtitles-v1" as const,
+              subtitleId: selected.subtitleId,
+              fileId: selected.file.file_id,
+              moviehashMatch: selected.moviehashMatch,
+              hearingImpaired: selected.hearingImpaired,
+              fromTrusted: selected.fromTrusted,
+              downloadCount: selected.downloadCount,
+            };
+            const identityEvidenceHash = createHash("sha256").update(JSON.stringify({
+              libraryId: video.libraryId,
+              videoId: video.id,
+              selectedFileEvidenceHash: identity.selectedFileEvidenceHash,
+              language,
+              provider,
+              release: selected.release,
+              contentHash,
+            })).digest("hex");
+            const stagedFileId = options.candidateFiles.stage(original);
+            const candidate: SubtitleCandidate = {
+              id: candidateId,
+              label: `OpenSubtitles candidate ${selected.subtitleId}`,
+              file: selected.file.file_name,
+              release: selected.release,
+              association: "OpenSubtitles provider identity and release metadata are recorded as candidate provenance, not proof of synchronization.",
+              language,
+              subtitleType: "text-based",
+              provenance: "provider-reported",
+              authorship: "unknown",
+              provider,
+              timing: { status: "unmeasured", evidence: "No dialogue synchronization measurement was performed.", limits: "Provider metadata and valid SRT structure do not establish synchronization." },
+              completeness: { status: "unmeasured", evidence: "No full-dialogue coverage measurement was performed.", limits: "A valid SRT structure does not establish full-dialogue coverage." },
+              destination: `/synthetic/subtitles/${video.id}.${language}.opensubtitles.srt`,
+              recommendationReason: "Selected by bounded provider metadata ordering; quality, completeness, and timing remain unmeasured.",
+              identityEvidenceHash,
+              contentHash,
+            };
+            return {
+              outcome: "candidates-found",
+              explanation: "Prepared one bounded OpenSubtitles fixture candidate for review.",
+              nextActions: ["defer"],
+              candidates: [candidate],
+              recommendedCandidateId: candidate.id,
+              attachments: [{ candidateId, filename: safeFilename(selected.file.file_name), stagedFileId }],
+            };
+          } catch (error) {
+            if (!(error instanceof PreparationFailure)) throw error;
+            if (error.outcome === "authentication-failed" || error.outcome === "quota-exhausted" ||
+                error.outcome === "run-deadline-exhausted") throw error;
+            lastCandidateFailure = error;
+            if (attempt >= MAX_PAYLOAD_ATTEMPTS) return terminal("payload-budget-exhausted");
+          }
         }
-        if (fields.remaining === 0) throw new PreparationFailure("quota-exhausted");
-        let payloadUrl: URL;
-        try { payloadUrl = new URL(fields.link); } catch { throw new PreparationFailure("malformed-provider-response"); }
-        const original = validatePlainSrt(payloadRequest(payloadUrl.href));
-        const contentHash = createHash("sha256").update(original).digest("hex");
-        const candidateId = `opensubtitles-${selected.subtitleId}-${selected.file.file_id}`;
-        const provider = {
-          name: "opensubtitles-v1" as const,
-          subtitleId: selected.subtitleId,
-          fileId: selected.file.file_id,
-          moviehashMatch: selected.moviehashMatch,
-          hearingImpaired: selected.hearingImpaired,
-          fromTrusted: selected.fromTrusted,
-          downloadCount: selected.downloadCount,
-        };
-        const identityEvidenceHash = createHash("sha256").update(JSON.stringify({
-          libraryId: video.libraryId,
-          videoId: video.id,
-          selectedFileEvidenceHash: identity.selectedFileEvidenceHash,
-          language,
-          provider,
-          release: selected.release,
-          contentHash,
-        })).digest("hex");
-        const stagedFileId = options.candidateFiles.stage(original);
-        const candidate: SubtitleCandidate = {
-          id: candidateId,
-          label: `OpenSubtitles candidate ${selected.subtitleId}`,
-          file: selected.file.file_name,
-          release: selected.release,
-          association: "OpenSubtitles provider identity and release metadata are recorded as candidate provenance, not proof of synchronization.",
-          language,
-          subtitleType: "text-based",
-          provenance: "provider-reported",
-          authorship: "unknown",
-          provider,
-          timing: { status: "unmeasured", evidence: "No dialogue synchronization measurement was performed.", limits: "Provider metadata and valid SRT structure do not establish synchronization." },
-          completeness: { status: "unmeasured", evidence: "No full-dialogue coverage measurement was performed.", limits: "A valid SRT structure does not establish full-dialogue coverage." },
-          destination: `/synthetic/subtitles/${video.id}.${language}.opensubtitles.srt`,
-          recommendationReason: "Selected by bounded provider metadata ordering; quality, completeness, and timing remain unmeasured.",
-          identityEvidenceHash,
-          contentHash,
-        };
-        return {
-          outcome: "candidates-found",
-          explanation: "Prepared one bounded OpenSubtitles fixture candidate for review.",
-          nextActions: ["defer"],
-          candidates: [candidate],
-          recommendedCandidateId: candidate.id,
-          attachments: [{ candidateId, filename: safeFilename(selected.file.file_name), stagedFileId }],
-        };
+        return terminal(lastCandidateFailure?.outcome ?? (sawDurableDuplicate ? "duplicate-candidate" : "no-candidates"));
       } catch (error) {
         if (error instanceof PreparationFailure) return terminal(error.outcome);
         return terminal("malformed-provider-response");
