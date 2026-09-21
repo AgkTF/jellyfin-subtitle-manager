@@ -69,6 +69,7 @@ export const test = base.extend<{ application: Application; refreshScenario: Ref
       get server() { return server; },
       get workflow() { return workflow; },
       async restart() {
+        server.server.closeAllConnections();
         await server.close();
         workflow.close();
         workflow = openRequestWorkflow({ databasePath });
@@ -82,6 +83,7 @@ export const test = base.extend<{ application: Application; refreshScenario: Ref
     try {
       await use(application);
     } finally {
+      server.server.closeAllConnections();
       await server.close();
       workflow.close();
       await rm(directory, { recursive: true, force: true });

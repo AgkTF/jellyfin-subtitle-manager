@@ -101,7 +101,7 @@ function DisabledPublicationReview({ request, candidate, candidateWasPreviewed }
 
   return <>
     <section aria-label="Publication approval" className="publication-approval">
-      <span className="eyebrow">Publication</span>
+      <span className="eyebrow">{candidateWasPreviewed ? "Next decision · publication" : "Publication · locked until preview"}</span>
       <h3>Review exact publication approval</h3>
       <p className="publication-state"><strong>Not published · publication unavailable in Slice 1</strong></p>
       <p>Preview evidence above is separate from publication. Reviewing this context grants no approval and starts no operation.</p>
@@ -147,7 +147,7 @@ function DisabledPublicationReview({ request, candidate, candidateWasPreviewed }
       )}
     </section>
     <section aria-label="Client verification" className="client-verification">
-      <span className="eyebrow">Client verification</span>
+      <span className="eyebrow">Later check · client verification</span>
       <h3>Jellyfin verification unavailable</h3>
       <p>No Jellyfin check is pending. Client verification starts only after a separately enabled publication has been verified; preview observations do not create this state.</p>
     </section>
@@ -160,6 +160,7 @@ function RequestWorkspace() {
     active: [],
     deferred: [],
   });
+  const [listLoading, setListLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<RequestView | null>(null);
@@ -195,10 +196,12 @@ function RequestWorkspace() {
           throw new Error("Request list response was invalid");
         }
         setRequestLists(body);
+        setListLoading(false);
       })
       .catch((error: unknown) => {
         if (!(error instanceof DOMException && error.name === "AbortError")) {
           setLoadFailed(true);
+          setListLoading(false);
         }
       });
 
@@ -417,18 +420,18 @@ function RequestWorkspace() {
           <div aria-label="Subtitle manager" className="brand-mark">
             S
           </div>
-          <div aria-hidden="true" className="rail-button is-active" title="Requests">
+          <button aria-current="page" aria-label="Requests" className="rail-button is-active" type="button">
             ◎
-          </div>
-          <div aria-hidden="true" className="rail-button rail-library" title="Library evidence">
+          </button>
+          <button aria-label="Library evidence unavailable" className="rail-button rail-library" disabled type="button">
             ▤
-          </div>
-          <div aria-hidden="true" className="rail-button rail-history" title="Operation history">
+          </button>
+          <button aria-label="Operation history unavailable" className="rail-button rail-history" disabled type="button">
             ↺
-          </div>
-          <div aria-hidden="true" className="rail-button rail-settings" title="Settings">
+          </button>
+          <button aria-label="Settings unavailable" className="rail-button rail-settings" disabled type="button">
             ⚙
-          </div>
+          </button>
         </aside>
 
         <aside aria-label="Request navigation" className="workspace-navigation">
@@ -529,7 +532,9 @@ function RequestWorkspace() {
                   <span role="columnheader">State / next action</span>
                   <span aria-hidden="true" />
                 </div>
-                {loadFailed ? (
+                {listLoading ? (
+                  <div className="empty-request-group" role="status">Loading request history…</div>
+                ) : loadFailed ? (
                   <div className="load-error" role="alert">
                     Request history could not be loaded. Reload to try again.
                   </div>
@@ -537,18 +542,19 @@ function RequestWorkspace() {
                   <div className="empty-request-group">Nothing in this request group.</div>
                 ) : (
                   selectedRequests.map((request) => (
-                    <div className="request-row" key={request.id} onClick={() => { void selectRequest(request); }} role="row">
-                      <div role="cell">
+                    <button className={`request-row ${selectedRequest?.id === request.id ? "is-selected" : ""}`}
+                      key={request.id} onClick={() => { void selectRequest(request); }} role="row" type="button">
+                      <span role="cell">
                         <strong>{request.video.label}</strong>
                         <span className="request-video-id">{request.video.id}</span>
-                      </div>
-                      <div role="cell">{languageLabel(request.language)}</div>
-                      <div role="cell">
-                        <span className="request-state">{groupLabels[request.lifecycle]}</span>
-                        <span className="request-state-detail">Lifecycle v{request.version}</span>
-                      </div>
-                      <div aria-hidden="true" role="cell">›</div>
-                    </div>
+                      </span>
+                      <span role="cell">{languageLabel(request.language)}</span>
+                      <span role="cell">
+                        <span className="request-state">{request.lifecycle === "active" ? "Needs attention" : "Deferred by you"}</span>
+                        <span className="request-state-detail">{groupLabels[request.lifecycle]} · open for next action · v{request.version}</span>
+                      </span>
+                      <span aria-hidden="true" role="cell">›</span>
+                    </button>
                   ))
                 )}
               </div>
@@ -565,26 +571,38 @@ function RequestWorkspace() {
             )}
             {selectedRequest !== null && (
               <section aria-label="Subtitle request detail" className="request-detail">
-                <header>
-                  <span className="eyebrow">Subtitle request detail</span>
-                  <h2>{selectedRequest.video.label} · {languageLabel(selectedRequest.language)}</h2>
-                  <p>{selectedRequest.lifecycle === "active"
-                    ? "This request is in active attention."
-                    : "This deferred request will return to active attention only when you retry it."}</p>
+                <header className="request-detail-heading">
+                  <div>
+                    <span className="eyebrow">{languageLabel(selectedRequest.language)} request · lifecycle v{selectedRequest.version}</span>
+                    <h2>{selectedRequest.video.label}</h2>
+                    <p>{selectedRequest.lifecycle === "active"
+                      ? "This request is in active attention. The current next action is shown first."
+                      : "Deferred by you. Evidence is retained until you explicitly retry."}</p>
+                  </div>
                 </header>
-                <section aria-labelledby="lifecycle-history-heading">
-                  <h3 id="lifecycle-history-heading">Lifecycle history</h3>
+                <div className="request-snapshot" aria-label="Request snapshot">
+                  <div><span>Request state</span><strong>{groupLabels[selectedRequest.lifecycle]}</strong></div>
+                  <div><span>Language need</span><strong>{languageLabel(selectedRequest.language)}</strong></div>
+                  <div><span>Candidate work</span><strong>{selectedRequest.preparation === null ? "Not started" : selectedRequest.preparation.outcome}</strong></div>
+                </div>
+                <details className="lifecycle-history" open>
+                  <summary>Lifecycle history</summary>
                   <ol>
                     {selectedRequest.lifecycleHistory.map((entry) => (
                       <li key={entry.version}>{groupLabels[entry.lifecycle]} · version {entry.version}</li>
                     ))}
                   </ol>
-                </section>
+                </details>
                 {selectedRequest.lifecycle === "active" && selectedRequest.preparation === null && (
-                  <button className="primary-button" disabled={preparationInProgress || transitionConflict}
-                    onClick={() => { void prepareRequest(); }} type="button">
-                    {preparationInProgress ? "Preparing…" : "Prepare synthetic candidates"}
-                  </button>
+                  <section aria-label="Current request action" className="current-action-card">
+                    <span className="action-kicker">Next action · prepare</span>
+                    <h3>Find bounded synthetic candidates</h3>
+                    <p>This local step records candidate evidence only. It does not publish a subtitle or contact a provider.</p>
+                    <button className="primary-button" disabled={preparationInProgress || transitionConflict}
+                      onClick={() => { void prepareRequest(); }} type="button">
+                      {preparationInProgress ? "Preparing…" : "Prepare synthetic candidates"}
+                    </button>
+                  </section>
                 )}
                 {selectedRequest.preparation !== null && (
                   <section aria-label="Prepared subtitle candidates" className="candidate-preparation">
@@ -610,26 +628,39 @@ function RequestWorkspace() {
                         const isRecommended = candidate.id === selectedRequest.preparation?.recommendedCandidateId;
                         const reason = rejectionReasons[candidate.id] ?? "";
                         return (
-                          <li key={candidate.id}>
-                            <button className="secondary-button candidate-select" disabled={candidate.rejection !== null}
-                              aria-pressed={selectedCandidate?.id === candidate.id}
-                              onClick={() => setSelectedCandidateId(candidate.id)} type="button">
-                              {selectedCandidate?.id === candidate.id ? "Selected candidate" : `Select ${candidate.label}`}
-                            </button>
-                            <strong>{candidate.label}{candidate.rejection !== null
-                              ? " · Rejected"
-                              : isRecommended ? " · Recommended" : " · Alternative"}</strong>
-                            <dl>
-                              <dt>Candidate ID</dt><dd>{candidate.id}</dd>
-                              <dt>Content SHA-256</dt><dd className="file-identity">{candidate.contentHash}</dd>
-                              <dt>Identity evidence hash</dt><dd className="file-identity">{candidate.identityEvidenceHash}</dd>
-                              <dt>File / release association</dt><dd>{candidate.file} · {candidate.release}</dd>
-                              <dt>Language / type</dt><dd>{languageLabel(candidate.language)} · {candidate.subtitleType}</dd>
-                              <dt>Provenance / authorship</dt><dd>{candidate.provenance}; {candidate.language === "ar" ? "Arabic authorship remains unknown" : "authorship remains unknown"}</dd>
-                              <dt>Timing evidence</dt><dd>{candidate.timing.status}: {candidate.timing.evidence} {candidate.timing.limits}</dd>
-                              <dt>Proposed destination</dt><dd>{candidate.destination} · publication is not enabled</dd>
-                            </dl>
-                            {candidate.rejection === null && selectedRequest.lifecycle === "active" ? (
+                          <li className={selectedCandidate?.id === candidate.id ? "is-selected" : ""} key={candidate.id}>
+                            <div className="candidate-heading">
+                              <div>
+                                <span className="action-kicker">{isRecommended ? "Recommended candidate" : "Alternative candidate"}</span>
+                                <strong>{candidate.label}{candidate.rejection !== null
+                                  ? " · Rejected"
+                                  : isRecommended ? " · Recommended" : " · Alternative"}</strong>
+                              </div>
+                              <button className="secondary-button candidate-select" disabled={candidate.rejection !== null}
+                                aria-pressed={selectedCandidate?.id === candidate.id}
+                                onClick={() => setSelectedCandidateId(candidate.id)} type="button">
+                                {selectedCandidate?.id === candidate.id ? "Selected candidate" : `Select ${candidate.label}`}
+                              </button>
+                            </div>
+                            <div className="candidate-facts">
+                              <span>{languageLabel(candidate.language)} · {candidate.subtitleType}</span>
+                              <span>{candidate.timing.status} timing</span>
+                              <span className="is-warning">Authorship unknown</span>
+                            </div>
+                            <details className="candidate-evidence">
+                              <summary>Evidence and file details</summary>
+                              <dl>
+                                <dt>Candidate ID</dt><dd>{candidate.id}</dd>
+                                <dt>Content SHA-256</dt><dd className="file-identity">{candidate.contentHash}</dd>
+                                <dt>Identity evidence hash</dt><dd className="file-identity">{candidate.identityEvidenceHash}</dd>
+                                <dt>File / release association</dt><dd>{candidate.file} · {candidate.release}</dd>
+                                <dt>Language / type</dt><dd>{languageLabel(candidate.language)} · {candidate.subtitleType}</dd>
+                                <dt>Provenance / authorship</dt><dd>{candidate.provenance}; {candidate.language === "ar" ? "Arabic authorship remains unknown" : "authorship remains unknown"}</dd>
+                                <dt>Timing evidence</dt><dd>{candidate.timing.status}: {candidate.timing.evidence} {candidate.timing.limits}</dd>
+                                <dt>Proposed destination</dt><dd>{candidate.destination} · publication is not enabled</dd>
+                              </dl>
+                            </details>
+                            {candidate.rejection === null && selectedRequest.lifecycle === "active" && selectedCandidate?.id === candidate.id ? (
                               <div className="candidate-rejection">
                                 <label htmlFor={`rejection-${candidate.identityEvidenceHash}`}>Reason for rejecting {candidate.label}</label>
                                 <textarea id={`rejection-${candidate.identityEvidenceHash}`} maxLength={1000} value={reason}
@@ -652,6 +683,7 @@ function RequestWorkspace() {
                     </ol>}
                     {selectedCandidate?.attachment !== null && selectedCandidate?.attachment !== undefined && (
                       <section aria-label="Selected candidate preview" className="candidate-preview">
+                        <span className="action-kicker">{selectedCandidateWasPreviewed ? "Preview evidence · recorded" : "Next action · preview"}</span>
                         <h3>Preview selected candidate</h3>
                         <p><strong>Selected video:</strong> {selectedRequest.video.label} · locator {selectedRequest.video.id}
                           (library {selectedRequest.video.libraryId})</p>
@@ -714,10 +746,30 @@ function RequestWorkspace() {
                       candidateWasPreviewed={selectedCandidateWasPreviewed} request={selectedRequest} />
                   </>
                 )}
-                <button className="secondary-button" disabled={transitionInProgress || transitionConflict}
-                  onClick={() => { void transitionRequest(selectedRequest.lifecycle === "active" ? "defer" : "retry"); }} type="button">
-                  {transitionInProgress ? "Updating…" : selectedRequest.lifecycle === "active" ? "Defer request" : "Retry request"}
-                </button>
+                <div className="phase-strip" role="group"
+                  aria-label="Preview, publication, and client verification remain separate">
+                  <div className={selectedCandidateWasPreviewed ? "is-done" : "is-current"}>
+                    <strong>1 · Preview</strong>
+                    <span>{selectedCandidateWasPreviewed ? "Observation recorded" : selectedCandidate === undefined ? "Awaiting candidate" : "Manual check required"}</span>
+                  </div>
+                  <div>
+                    <strong>2 · Publication</strong>
+                    <span>Unavailable in Slice 1</span>
+                  </div>
+                  <div>
+                    <strong>3 · Client check</strong>
+                    <span>Only after publication</span>
+                  </div>
+                </div>
+                <footer className="request-lower-actions">
+                  <p>{selectedRequest.lifecycle === "active"
+                    ? "Not ready to continue? Deferring preserves all evidence and starts no other action."
+                    : "Retry returns this request to active attention; it does not repeat preparation automatically."}</p>
+                  <button className="secondary-button request-action" disabled={transitionInProgress || transitionConflict}
+                    onClick={() => { void transitionRequest(selectedRequest.lifecycle === "active" ? "defer" : "retry"); }} type="button">
+                    {transitionInProgress ? "Updating…" : selectedRequest.lifecycle === "active" ? "Defer request" : "Retry request"}
+                  </button>
+                </footer>
               </section>
             )}
           </div>
