@@ -55,6 +55,30 @@ function languageLabel(language: RequestSummary["language"]): string {
   return language === "en" ? "English" : "Arabic";
 }
 
+function preparationOutcomeLabel(outcome: NonNullable<RequestView["preparation"]>["outcome"]): string {
+  const labels: Partial<Record<typeof outcome, string>> = {
+    "candidates-found": "Candidates found",
+    "no-candidates": "No eligible candidates",
+    "no-suitable-candidate": "No suitable candidate",
+    blocked: "Blocked safely",
+    "authentication-failed": "Authentication failed",
+    "quota-exhausted": "Provider quota exhausted",
+    "transport-failed": "Transport failed",
+    "timed-out": "Provider timed out",
+    "malformed-provider-response": "Malformed provider response",
+    "provider-failed": "Provider failed",
+    "unsafe-content": "Unsafe response rejected",
+  };
+  return `${labels[outcome] ?? "Preparation stopped"} (${outcome})`;
+}
+
+function usedProviderTransport(preparation: NonNullable<RequestView["preparation"]>): boolean {
+  if (preparation.candidates.length > 0) {
+    return preparation.candidates.some((candidate) => candidate.provider !== undefined);
+  }
+  return !new Set(["blocked", "no-suitable-candidate", "failed"]).has(preparation.outcome);
+}
+
 async function loadRequest(requestId: string): Promise<RequestView> {
   const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}`);
   if (!response.ok) throw new Error(`Request detail failed with ${response.status}`);
@@ -583,7 +607,7 @@ function RequestWorkspace() {
                 <div className="request-snapshot" aria-label="Request snapshot">
                   <div><span>Request state</span><strong>{groupLabels[selectedRequest.lifecycle]}</strong></div>
                   <div><span>Language need</span><strong>{languageLabel(selectedRequest.language)}</strong></div>
-                  <div><span>Candidate work</span><strong>{selectedRequest.preparation === null ? "Not started" : selectedRequest.preparation.outcome}</strong></div>
+                  <div><span>Candidate work</span><strong>{selectedRequest.preparation === null ? "Not started" : preparationOutcomeLabel(selectedRequest.preparation.outcome)}</strong></div>
                 </div>
                 <details className="lifecycle-history" open>
                   <summary>Lifecycle history</summary>
@@ -607,11 +631,13 @@ function RequestWorkspace() {
                 {selectedRequest.preparation !== null && (
                   <section aria-label="Prepared subtitle candidates" className="candidate-preparation">
                     <h3>Preparation result</h3>
-                    <p><strong>Outcome:</strong> {selectedRequest.preparation.outcome}</p>
+                    <p><strong>Outcome:</strong> {preparationOutcomeLabel(selectedRequest.preparation.outcome)}</p>
                     <p>{selectedRequest.preparation.explanation}</p>
-                    <p>{selectedRequest.preparation.candidates.some((candidate) => candidate.provider !== undefined)
+                    <p>{usedProviderTransport(selectedRequest.preparation)
                       ? "Provider activity used the configured synthetic HTTP transport; real provider traffic remains disabled."
-                      : "Provider and network activity: none."} Only the selected candidate can be downloaded as an application-owned attachment.</p>
+                      : "Provider and network activity: none."} {selectedRequest.preparation.candidates.length > 0
+                        ? "Only the selected candidate can be downloaded as an application-owned attachment."
+                        : "No candidate attachment was created."}</p>
                     {selectedRequest.preparation.nextActions.includes("retry") && selectedRequest.lifecycle === "active" && (
                       <button className="secondary-button" disabled={preparationInProgress || transitionConflict}
                         onClick={() => { void retryPreparation(); }} type="button">
@@ -666,6 +692,9 @@ function RequestWorkspace() {
                                 <dt>Provenance / authorship</dt><dd>{candidate.provenance}; {candidate.language === "ar" ? "Arabic authorship remains unknown" : "authorship remains unknown"}</dd>
                                 {candidate.provider !== undefined && <>
                                   <dt>Provider identity</dt><dd>{candidate.provider.name} · subtitle {candidate.provider.subtitleId} · file {candidate.provider.fileId}</dd>
+                                  {candidate.provider.fromTrusted !== undefined && <>
+                                    <dt>Provider metadata</dt><dd>{candidate.provider.moviehashMatch ? "provider-reported movie-hash match" : "no provider-reported movie-hash match"} · {candidate.provider.hearingImpaired ? "hearing-impaired claim" : "not hearing-impaired (provider-reported)"} · {candidate.provider.fromTrusted ? "trusted-source claim" : "no trusted-source claim"} · {candidate.provider.downloadCount} reported downloads</dd>
+                                  </>}
                                 </>}
                                 <dt>Timing evidence</dt><dd>{candidate.timing.status}: {candidate.timing.evidence} {candidate.timing.limits}</dd>
                                 <dt>Completeness evidence</dt><dd>{candidate.completeness.status}: {candidate.completeness.evidence} {candidate.completeness.limits}</dd>
