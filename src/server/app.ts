@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -57,17 +57,84 @@ interface AttachmentParams {
   attachmentId: string;
 }
 
+const csrfCookieName = "subtitle_csrf";
+const safeMethods = new Set(["GET", "HEAD", "OPTIONS"]);
+
+function normalizeLoopbackHost(value: string): string | undefined {
+  const match = /^(localhost|127\.0\.0\.1|\[::1\])(?::([0-9]{1,5}))?$/i.exec(value);
+  if (match === null) return undefined;
+  const port = match[2] === undefined ? 80 : Number.parseInt(match[2], 10);
+  if (port > 65535) return undefined;
+  return `${match[1].toLowerCase()}:${port}`;
+}
+
+function isTrustedOrigin(origin: string, host: string): boolean {
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === "http:" && normalizeLoopbackHost(parsed.host) === normalizeLoopbackHost(host);
+  } catch {
+    return false;
+  }
+}
+
+function readCookie(cookieHeader: string | undefined, name: string): string | undefined {
+  for (const part of cookieHeader?.split(";") ?? []) {
+    const separator = part.indexOf("=");
+    if (separator === -1) continue;
+    const key = part.slice(0, separator).trim();
+    if (key === name) return part.slice(separator + 1).trim();
+  }
+  return undefined;
+}
+
+function safeAttachmentFilename(value: string): string {
+  const filename = value.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "_").slice(0, 120);
+  return filename.length === 0 ? "candidate.srt" : filename;
+}
+
 export function buildServer(options: ServerOptions = {}): FastifyInstance {
-  const server = Fastify({ logger: options.logger ?? false });
+  const server = Fastify({
+    logger: options.logger === true
+      ? {
+          redact: {
+            paths: ["req.headers.cookie", "req.headers.authorization", "res.headers['set-cookie']"],
+            remove: true,
+          },
+        }
+      : options.logger ?? false,
+  });
 
   // Loopback binding alone does not prevent DNS rebinding or cross-origin reads.
   server.addHook("onRequest", async (request, reply) => {
     const host = request.headers.host ?? "";
     const origin = request.headers.origin;
-    if (!/^(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?$/.test(host) ||
-        (origin !== undefined && origin !== `http://${host}`)) {
+    const trustedOrigin = origin !== undefined && isTrustedOrigin(origin, host);
+    if (normalizeLoopbackHost(host) === undefined || (origin !== undefined && !trustedOrigin)) {
       return reply.code(403).send({ error: "Untrusted Host or Origin" });
     }
+    if (!safeMethods.has(request.method)) {
+      const csrfCookie = readCookie(request.headers.cookie, csrfCookieName);
+      const csrfHeader = request.headers["x-csrf-token"];
+      if (!trustedOrigin || csrfCookie === undefined || csrfHeader !== csrfCookie) {
+        return reply.code(403).send({ error: "CSRF protection required" });
+      }
+    }
+  });
+
+  server.addHook("onSend", async (request, reply, payload) => {
+    reply.header("x-content-type-options", "nosniff");
+    if (request.url.startsWith("/api/")) reply.header("cache-control", "no-store");
+    reply.header("referrer-policy", "no-referrer");
+    reply.header("content-security-policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'");
+    return payload;
+  });
+
+  server.get("/api/csrf-token", async (_request, reply) => {
+    const token = randomBytes(32).toString("base64url");
+    return reply
+      .header("set-cookie", `${csrfCookieName}=${token}; Path=/; SameSite=Strict`)
+      .header("cache-control", "no-store")
+      .send({ status: "ok" });
   });
 
   server.get("/health", async () => ({ status: "ok" }));
@@ -150,10 +217,11 @@ export function buildServer(options: ServerOptions = {}): FastifyInstance {
       if (attachment === undefined) {
         return reply.code(404).send({ error: "Candidate attachment was not found" });
       }
-      const filename = attachment.filename.replace(/[\\"\r\n]/g, "_");
+      const filename = safeAttachmentFilename(attachment.filename);
       return reply
         .type("application/x-subrip")
         .header("content-disposition", `attachment; filename="${filename}"`)
+        .header("cache-control", "no-store")
         .header("x-content-sha256", attachment.contentHash)
         .send(attachment.content);
     });

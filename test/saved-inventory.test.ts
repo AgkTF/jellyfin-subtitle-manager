@@ -5,6 +5,46 @@ import { buildServer } from "../src/server/app.js";
 import { openRequestWorkflow } from "../src/server/request-workflow.js";
 import { openSyntheticSavedInventory } from "../src/server/saved-inventory.js";
 
+async function trustedMutationHeaders(server: ReturnType<typeof buildServer>) {
+  const host = "localhost:80";
+  const origin = `http://${host}`;
+  const tokenResponse = await server.inject({
+    method: "GET",
+    url: "/api/csrf-token",
+    headers: { host, origin },
+  });
+  assert.equal(tokenResponse.statusCode, 200);
+  const cookieHeader = tokenResponse.headers["set-cookie"];
+  const cookie = Array.isArray(cookieHeader) ? cookieHeader[0] : cookieHeader;
+  assert.match(cookie ?? "", /^subtitle_csrf=[^;]+;/);
+  const token = cookie?.match(/^subtitle_csrf=([^;]+)/)?.[1];
+  assert.ok(token);
+  return { host, origin, cookie: cookie?.split(";", 1)[0], "x-csrf-token": token };
+}
+
+test("protects state-changing requests with a trusted origin and double-submit CSRF token", async (context) => {
+  const workflow = openRequestWorkflow({ databasePath: ":memory:" });
+  const server = buildServer({ workflow });
+  context.after(async () => { await server.close(); workflow.close(); });
+
+  const missingOrigin = await server.inject({ method: "POST", url: "/api/inventory/refresh" });
+  assert.equal(missingOrigin.statusCode, 403);
+  const untrustedOrigin = await server.inject({
+    method: "POST", url: "/api/inventory/refresh",
+    headers: { host: "localhost:80", origin: "https://untrusted.example" },
+  });
+  assert.equal(untrustedOrigin.statusCode, 403);
+  const missingCsrf = await server.inject({
+    method: "POST", url: "/api/inventory/refresh",
+    headers: { host: "localhost:80", origin: "http://localhost:80" },
+  });
+  assert.equal(missingCsrf.statusCode, 403);
+
+  const headers = await trustedMutationHeaders(server);
+  const accepted = await server.inject({ method: "POST", url: "/api/inventory/refresh", headers });
+  assert.equal(accepted.statusCode, 200);
+});
+
 test("searches synthetic saved inventory and retains scan and subtitle evidence", async (context) => {
   const server = buildServer();
   context.after(() => server.close());
@@ -30,8 +70,9 @@ test("an explicit synthetic refresh replaces the saved snapshot without creating
 
   const before = await server.inject({ method: "GET", url: "/api/inventory" });
   assert.equal(before.json().scannedAt, "2026-01-15T12:00:00Z");
+  const headers = await trustedMutationHeaders(server);
 
-  const response = await server.inject({ method: "POST", url: "/api/inventory/refresh" });
+  const response = await server.inject({ method: "POST", url: "/api/inventory/refresh", headers });
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().outcome, "success");
@@ -56,10 +97,11 @@ test("repeated refresh requests cannot overlap or duplicate effects", async (con
   });
   const server = buildServer({ inventory });
   context.after(() => server.close());
+  const headers = await trustedMutationHeaders(server);
 
-  const first = server.inject({ method: "POST", url: "/api/inventory/refresh" });
+  const first = server.inject({ method: "POST", url: "/api/inventory/refresh", headers });
   await new Promise((resolve) => setImmediate(resolve));
-  const repeated = await server.inject({ method: "POST", url: "/api/inventory/refresh" });
+  const repeated = await server.inject({ method: "POST", url: "/api/inventory/refresh", headers });
 
   assert.equal(repeated.statusCode, 409);
   assert.deepEqual(repeated.json(), { error: "Inventory refresh already in progress" });
@@ -83,8 +125,9 @@ test("a partial refresh replaces the snapshot while retaining its scan errors", 
   });
   const server = buildServer({ inventory });
   context.after(() => server.close());
+  const headers = await trustedMutationHeaders(server);
 
-  const response = await server.inject({ method: "POST", url: "/api/inventory/refresh" });
+  const response = await server.inject({ method: "POST", url: "/api/inventory/refresh", headers });
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().outcome, "partial");
@@ -102,8 +145,9 @@ test("a failed refresh keeps the previous saved snapshot distinguishable", async
   });
   const server = buildServer({ inventory });
   context.after(() => server.close());
+  const headers = await trustedMutationHeaders(server);
 
-  const response = await server.inject({ method: "POST", url: "/api/inventory/refresh" });
+  const response = await server.inject({ method: "POST", url: "/api/inventory/refresh", headers });
 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.json(), {
@@ -142,10 +186,12 @@ test("creates one request for an explicitly selected unambiguous identity and la
   const workflow = openRequestWorkflow({ databasePath: ":memory:" });
   const server = buildServer({ workflow });
   context.after(async () => { await server.close(); workflow.close(); });
+  const headers = await trustedMutationHeaders(server);
 
   const create = () => server.inject({
     method: "POST",
     url: "/api/requests",
+    headers,
     payload: {
       videoId: "quiet-orbit",
       identityId: "quiet-orbit-2025",
@@ -178,6 +224,7 @@ test("creates one request for an explicitly selected unambiguous identity and la
   const ambiguous = await server.inject({
     method: "POST",
     url: "/api/requests",
+    headers,
     payload: { videoId: "harbor-signal", identityId: "harbor-signal-2024", language: "en" },
   });
   assert.equal(ambiguous.statusCode, 422);
@@ -186,6 +233,7 @@ test("creates one request for an explicitly selected unambiguous identity and la
   const invalidLanguage = await server.inject({
     method: "POST",
     url: "/api/requests",
+    headers,
     payload: { videoId: "quiet-orbit", identityId: "quiet-orbit-2025", language: "fr" },
   });
   assert.equal(invalidLanguage.statusCode, 400);
@@ -195,14 +243,15 @@ test("downloads only an owned prepared candidate and records durable preview evi
   const workflow = openRequestWorkflow({ databasePath: ":memory:" });
   const server = buildServer({ workflow });
   context.after(async () => { await server.close(); workflow.close(); });
+  const headers = await trustedMutationHeaders(server);
 
   const created = await server.inject({
-    method: "POST", url: "/api/requests", payload: {
+    method: "POST", url: "/api/requests", headers, payload: {
       videoId: "quiet-orbit", identityId: "quiet-orbit-2025", language: "ar",
     },
   });
   const prepared = await server.inject({
-    method: "POST", url: `/api/requests/${created.json().id}/prepare`, payload: { version: 1 },
+    method: "POST", url: `/api/requests/${created.json().id}/prepare`, headers, payload: { version: 1 },
   });
   const request = prepared.json();
   const candidate = request.preparation.candidates[0];
@@ -218,15 +267,19 @@ test("downloads only an owned prepared candidate and records durable preview evi
   assert.match(download.headers["content-disposition"] ?? "", /^attachment; filename="/);
   assert.match(download.body, /Synthetic subtitle candidate/);
   assert.equal(download.headers["content-type"], "application/x-subrip");
+  assert.equal(download.headers["x-content-type-options"], "nosniff");
+  assert.equal(download.headers["cache-control"], "no-store");
+  assert.match(download.headers["content-security-policy"] ?? "", /object-src 'none'/);
   assert.equal((await server.inject({ method: "GET", url: "/api/candidate-attachments/not-owned" })).statusCode, 404);
 
   const otherCreated = await server.inject({
-    method: "POST", url: "/api/requests", payload: {
+    method: "POST", url: "/api/requests", headers, payload: {
       videoId: "quiet-orbit", identityId: "quiet-orbit-2025", language: "en",
     },
   });
   const crossRequest = await server.inject({
     method: "POST", url: `/api/requests/${otherCreated.json().id}/preview-observations`,
+    headers,
     payload: {
       version: 1, attachmentId: candidate.attachment.id, client: "Existing desktop player",
       outcome: "usable", sample: { beginning: "checked", middle: "checked", end: "checked" },
@@ -236,6 +289,7 @@ test("downloads only an owned prepared candidate and records durable preview evi
 
   const observation = await server.inject({
     method: "POST", url: `/api/requests/${request.id}/preview-observations`,
+    headers,
     payload: {
       version: 1,
       attachmentId: candidate.attachment.id,
@@ -260,7 +314,7 @@ test("downloads only an owned prepared candidate and records durable preview evi
   });
 
   const rejected = await server.inject({
-    method: "POST", url: `/api/requests/${request.id}/reject`, payload: {
+    method: "POST", url: `/api/requests/${request.id}/reject`, headers, payload: {
       version: 1, candidateId: candidate.id, identityEvidenceHash: candidate.identityEvidenceHash,
       reason: "The preview was not suitable.",
     },
@@ -269,6 +323,7 @@ test("downloads only an owned prepared candidate and records durable preview evi
   assert.equal((await server.inject({ method: "GET", url: candidate.attachment.downloadUrl })).statusCode, 404);
   const observedRejected = await server.inject({
     method: "POST", url: `/api/requests/${request.id}/preview-observations`,
+    headers,
     payload: {
       version: 1, attachmentId: candidate.attachment.id, client: "Existing desktop player",
       outcome: "usable", sample: { beginning: "checked", middle: "checked", end: "checked" },
@@ -286,6 +341,7 @@ test("saved-inventory searches preserve existing requests and never expose a mut
   workflow.issue({ type: "defer-request", request: { id: "existing-synthetic-request", version: 1 } });
   const server = buildServer({ workflow });
   context.after(async () => { await server.close(); workflow.close(); });
+  const headers = await trustedMutationHeaders(server);
   const before = (await server.inject({ method: "GET", url: "/api/requests" })).json();
 
   const all = await server.inject({ method: "GET", url: "/api/inventory" });
@@ -299,7 +355,7 @@ test("saved-inventory searches preserve existing requests and never expose a mut
   const bounded = await server.inject({ method: "GET", url: `/api/inventory?q=${"x".repeat(201)}` });
   assert.equal(bounded.statusCode, 400);
   for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
-    const response = await server.inject({ method, url: "/api/inventory" });
+    const response = await server.inject({ method, url: "/api/inventory", headers });
     assert.equal(response.statusCode, 404);
   }
   const after = (await server.inject({ method: "GET", url: "/api/requests" })).json();

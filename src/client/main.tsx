@@ -10,6 +10,7 @@ import type {
 } from "../server/request-workflow.js";
 
 import { InventoryPicker } from "./inventory-picker.js";
+import { protectedFetch } from "./security.js";
 
 import "./styles.css";
 
@@ -274,7 +275,7 @@ function RequestWorkspace() {
     setPreparationInProgress(true);
     setDetailFailed(false);
     try {
-      const response = await fetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/prepare`, {
+      const response = await protectedFetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/prepare`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ version: selectedRequest.version }),
@@ -297,7 +298,7 @@ function RequestWorkspace() {
     setPreparationInProgress(true);
     setDetailFailed(false);
     try {
-      const response = await fetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/retry-preparation`, {
+      const response = await protectedFetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/retry-preparation`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ version: selectedRequest.version }),
@@ -322,7 +323,7 @@ function RequestWorkspace() {
     setObservationInProgress(true);
     setDetailFailed(false);
     try {
-      const response = await fetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/preview-observations`, {
+      const response = await protectedFetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/preview-observations`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -357,7 +358,7 @@ function RequestWorkspace() {
     setRejectionInProgress(candidate.id);
     setDetailFailed(false);
     try {
-      const response = await fetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/reject`, {
+      const response = await protectedFetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/reject`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -388,7 +389,7 @@ function RequestWorkspace() {
     setTransitionInProgress(true);
     setDetailFailed(false);
     try {
-      const response = await fetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/${action}`, {
+      const response = await protectedFetch(`/api/requests/${encodeURIComponent(selectedRequest.id)}/${action}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ version: selectedRequest.version }),

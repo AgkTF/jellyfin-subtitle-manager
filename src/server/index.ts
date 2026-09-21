@@ -7,6 +7,7 @@ import { resolveApiPort } from "./config.js";
 import { openRequestWorkflow } from "./request-workflow.js";
 
 const port = resolveApiPort(process.env.PORT);
+const loopbackHost = "127.0.0.1";
 const clientRoot = fileURLToPath(new URL("../client/", import.meta.url));
 const databasePath =
   process.env.SUBTITLE_MANAGER_STATE_PATH ??
@@ -17,7 +18,7 @@ const server = buildServer({ clientRoot, logger: true, workflow });
 server.addHook("onClose", async () => workflow.close());
 
 try {
-  await server.listen({ host: "127.0.0.1", port });
+  await server.listen({ host: loopbackHost, port });
 } catch (error) {
   server.log.error(error);
   process.exitCode = 1;

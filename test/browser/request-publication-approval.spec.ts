@@ -73,9 +73,10 @@ for (const viewport of [
       return (await response.json() as { active: Array<{ id: string; version: number }> }).active[0];
     });
     const directPublication = await page.evaluate(async ({ requestId, version, candidateId, contentHash, destination }) => {
+      const csrfToken = document.cookie.split("; ").find((cookie) => cookie.startsWith("subtitle_csrf="))?.slice("subtitle_csrf=".length);
       const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/publish`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-csrf-token": csrfToken ?? "" },
         body: JSON.stringify({ version, candidateId, contentHash, destination }),
       });
       await response.text();

@@ -8,6 +8,8 @@ import type {
   SubtitleEvidence,
 } from "../server/inventory-contract.js";
 
+import { protectedFetch } from "./security.js";
+
 import "./inventory-picker.css";
 
 type InventoryState =
@@ -107,7 +109,7 @@ export function InventoryPicker({ onClose, onCreated }: {
     refreshInFlight.current = true;
     setRefreshState({ status: "refreshing" });
     try {
-      const response = await fetch("/api/inventory/refresh", { method: "POST" });
+      const response = await protectedFetch("/api/inventory/refresh", { method: "POST" });
       if (!response.ok) throw new Error(`Refresh failed with ${response.status}`);
       const result = await response.json() as InventoryRefreshResult;
       if (result.outcome === "failed") {
@@ -144,7 +146,7 @@ export function InventoryPicker({ onClose, onCreated }: {
     createInFlight.current = true;
     setCreateState({ status: "creating" });
     try {
-      const response = await fetch("/api/requests", {
+      const response = await protectedFetch("/api/requests", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ videoId: video.id, identityId: identity.id, language }),
