@@ -2,11 +2,15 @@ import { randomUUID } from "node:crypto";
 
 import Database from "better-sqlite3";
 
-import {
-  prepareSyntheticCandidates,
-  type PreparationOutcome,
-  type SubtitleCandidate,
-} from "./synthetic-preparation.js";
+import type {
+  CandidatePreparation,
+  CandidatePreparationAdapter,
+  PreparationOutcome,
+  PreparationVideo,
+  SubtitleCandidate,
+} from "./candidate-preparation.js";
+import type { PrivateCandidateStore } from "./private-candidate-store.js";
+import { prepareSyntheticCandidates } from "./synthetic-preparation.js";
 
 export type SubtitleLanguage = "en" | "ar";
 
@@ -94,7 +98,7 @@ export type RequestCommand =
         id: string;
         version: 0;
       };
-      video: VideoIdentity;
+      video: PreparationVideo;
       language: SubtitleLanguage;
     }
   | {
@@ -192,6 +196,8 @@ interface RequestRow {
   library_id: string;
   video_id: string;
   video_label: string;
+  saved_video_id: string | null;
+  provider_identity_json: string | null;
   language: SubtitleLanguage;
   lifecycle: RequestLifecycle;
 }
@@ -213,7 +219,8 @@ interface CandidateAttachmentRow {
   candidate_id: string;
   content_hash: string;
   filename: string;
-  content: Buffer;
+  content: Buffer | null;
+  staged_file_id: string | null;
 }
 
 interface PreviewObservationRow {
@@ -261,10 +268,27 @@ function toRequestSummary(row: RequestRow): RequestSummary {
   };
 }
 
+function toPreparationVideo(row: RequestRow): PreparationVideo {
+  return {
+    libraryId: row.library_id,
+    id: row.video_id,
+    label: row.video_label,
+    ...(row.saved_video_id === null ? {} : { savedVideoId: row.saved_video_id }),
+    ...(row.provider_identity_json === null
+      ? {}
+      : { openSubtitlesSearchIdentity: JSON.parse(row.provider_identity_json) as PreparationVideo["openSubtitlesSearchIdentity"] }),
+  };
+}
+
 export function openRequestWorkflow(options: {
   databasePath: string;
+  preparation?: CandidatePreparationAdapter;
+  candidateFiles?: PrivateCandidateStore;
 }): RequestWorkflow {
   const database = new Database(options.databasePath);
+  const preparationAdapter = options.preparation ?? {
+    prepare: prepareSyntheticCandidates,
+  };
   database.pragma("foreign_keys = ON");
 
   database.exec(`
@@ -274,6 +298,8 @@ export function openRequestWorkflow(options: {
       library_id TEXT NOT NULL,
       video_id TEXT NOT NULL,
       video_label TEXT NOT NULL,
+      saved_video_id TEXT,
+      provider_identity_json TEXT,
       language TEXT NOT NULL,
       lifecycle TEXT NOT NULL
     ) STRICT;
@@ -314,7 +340,10 @@ export function openRequestWorkflow(options: {
       candidate_identity_hash TEXT NOT NULL,
       content_hash TEXT NOT NULL,
       filename TEXT NOT NULL,
-      content BLOB NOT NULL,
+      content BLOB,
+      staged_file_id TEXT,
+      CHECK ((content IS NOT NULL AND staged_file_id IS NULL) OR
+             (content IS NULL AND staged_file_id IS NOT NULL)),
       UNIQUE (request_id, candidate_id, content_hash)
     ) STRICT;
 
@@ -340,6 +369,44 @@ export function openRequestWorkflow(options: {
     SELECT request_id, version, lifecycle FROM subtitle_requests;
   `);
 
+  const requestColumns = database.prepare("PRAGMA table_info(subtitle_requests)")
+    .all() as Array<{ name: string }>;
+  if (!requestColumns.some((column) => column.name === "saved_video_id")) {
+    database.exec("ALTER TABLE subtitle_requests ADD COLUMN saved_video_id TEXT");
+  }
+  if (!requestColumns.some((column) => column.name === "provider_identity_json")) {
+    database.exec("ALTER TABLE subtitle_requests ADD COLUMN provider_identity_json TEXT");
+  }
+
+  const attachmentColumns = database.prepare("PRAGMA table_info(candidate_attachments)")
+    .all() as Array<{ name: string }>;
+  if (!attachmentColumns.some((column) => column.name === "staged_file_id")) {
+    database.exec(`
+      ALTER TABLE candidate_attachments RENAME TO legacy_candidate_attachments;
+      CREATE TABLE candidate_attachments (
+        attachment_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL REFERENCES subtitle_requests(request_id),
+        candidate_id TEXT NOT NULL,
+        candidate_identity_hash TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        content BLOB,
+        staged_file_id TEXT,
+        CHECK ((content IS NOT NULL AND staged_file_id IS NULL) OR
+               (content IS NULL AND staged_file_id IS NOT NULL)),
+        UNIQUE (request_id, candidate_id, content_hash)
+      ) STRICT;
+      INSERT INTO candidate_attachments (
+        attachment_id, request_id, candidate_id, candidate_identity_hash,
+        content_hash, filename, content, staged_file_id
+      )
+      SELECT attachment_id, request_id, candidate_id, candidate_identity_hash,
+        content_hash, filename, content, NULL
+      FROM legacy_candidate_attachments;
+      DROP TABLE legacy_candidate_attachments;
+    `);
+  }
+
   const preparationColumns = database.prepare("PRAGMA table_info(request_preparations)")
     .all() as Array<{ name: string }>;
   if (!preparationColumns.some((column) => column.name === "outcome")) {
@@ -361,8 +428,8 @@ export function openRequestWorkflow(options: {
 
   const preparationRows = database.prepare(`
     SELECT
-      r.request_id, r.version, r.library_id, r.video_id, r.video_label, r.language, r.lifecycle,
-      p.candidates_json, p.outcome, p.explanation, p.next_actions_json
+      r.request_id, r.version, r.library_id, r.video_id, r.video_label, r.saved_video_id,
+      r.provider_identity_json, r.language, r.lifecycle, p.candidates_json, p.outcome, p.explanation, p.next_actions_json
     FROM request_preparations p
     JOIN subtitle_requests r ON r.request_id = p.request_id
   `).all() as PreparationMigrationRow[];
@@ -372,27 +439,29 @@ export function openRequestWorkflow(options: {
   database.transaction(() => {
     for (const row of preparationRows) {
       const stored = JSON.parse(row.candidates_json) as Array<
-        Omit<SubtitleCandidate, "identityEvidenceHash" | "contentHash"> & {
+        Omit<SubtitleCandidate, "identityEvidenceHash" | "contentHash" | "completeness"> & {
           identityEvidenceHash?: string;
           evidenceHash?: string;
           contentHash?: string;
+          completeness?: SubtitleCandidate["completeness"];
         }
       >;
-      if (stored.every((candidate) => candidate.identityEvidenceHash !== undefined && candidate.contentHash !== undefined)) continue;
+      if (stored.every((candidate) => candidate.identityEvidenceHash !== undefined &&
+          candidate.contentHash !== undefined && candidate.completeness !== undefined)) continue;
       const generated = prepareSyntheticCandidates(
         { libraryId: row.library_id, id: row.video_id, label: row.video_label },
         row.language,
       ).candidates;
       const migrated = stored.map((candidate) => {
-        if (candidate.identityEvidenceHash !== undefined && candidate.contentHash !== undefined) return candidate;
         const { evidenceHash, ...candidateEvidence } = candidate;
         const generatedCandidate = generated.find((item) => item.id === candidate.id);
-        const identityEvidenceHash = evidenceHash ?? generatedCandidate?.identityEvidenceHash;
+        const identityEvidenceHash = candidate.identityEvidenceHash ?? evidenceHash ?? generatedCandidate?.identityEvidenceHash;
         const contentHash = candidate.contentHash ?? generatedCandidate?.contentHash;
-        if (identityEvidenceHash === undefined || contentHash === undefined) {
+        const completeness = candidate.completeness ?? generatedCandidate?.completeness;
+        if (identityEvidenceHash === undefined || contentHash === undefined || completeness === undefined) {
           throw new Error(`Prepared candidate ${candidate.id} cannot be migrated to durable candidate evidence`);
         }
-        return { ...candidateEvidence, identityEvidenceHash, contentHash };
+        return { ...candidateEvidence, identityEvidenceHash, contentHash, completeness };
       });
       updatePreparationCandidates.run(JSON.stringify(migrated), row.request_id);
     }
@@ -400,18 +469,22 @@ export function openRequestWorkflow(options: {
 
   const insertRequest = database.prepare(`
     INSERT INTO subtitle_requests (
-      request_id, version, library_id, video_id, video_label, language, lifecycle
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      request_id, version, library_id, video_id, video_label, saved_video_id,
+      provider_identity_json, language, lifecycle
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT DO NOTHING
-    RETURNING request_id, version, library_id, video_id, video_label, language, lifecycle
+    RETURNING request_id, version, library_id, video_id, video_label, saved_video_id,
+      provider_identity_json, language, lifecycle
   `);
   const selectRequest = database.prepare(`
-    SELECT request_id, version, library_id, video_id, video_label, language, lifecycle
+    SELECT request_id, version, library_id, video_id, video_label, saved_video_id,
+      provider_identity_json, language, lifecycle
     FROM subtitle_requests
     WHERE request_id = ?
   `);
   const selectRequestByVideoLanguage = database.prepare(`
-    SELECT request_id, version, library_id, video_id, video_label, language, lifecycle
+    SELECT request_id, version, library_id, video_id, video_label, saved_video_id,
+      provider_identity_json, language, lifecycle
     FROM subtitle_requests
     WHERE library_id = ? AND video_id = ? AND language = ?
   `);
@@ -419,16 +492,19 @@ export function openRequestWorkflow(options: {
     UPDATE subtitle_requests
     SET version = version + 1, lifecycle = 'deferred'
     WHERE request_id = ? AND version = ? AND lifecycle = 'active'
-    RETURNING request_id, version, library_id, video_id, video_label, language, lifecycle
+    RETURNING request_id, version, library_id, video_id, video_label, saved_video_id,
+      provider_identity_json, language, lifecycle
   `);
   const retryRequest = database.prepare(`
     UPDATE subtitle_requests
     SET version = version + 1, lifecycle = 'active'
     WHERE request_id = ? AND version = ? AND lifecycle = 'deferred'
-    RETURNING request_id, version, library_id, video_id, video_label, language, lifecycle
+    RETURNING request_id, version, library_id, video_id, video_label, saved_video_id,
+      provider_identity_json, language, lifecycle
   `);
   const selectRequestsByLifecycle = database.prepare(`
-    SELECT request_id, version, library_id, video_id, video_label, language, lifecycle
+    SELECT request_id, version, library_id, video_id, video_label, saved_video_id,
+      provider_identity_json, language, lifecycle
     FROM subtitle_requests
     WHERE lifecycle = ?
     ORDER BY request_id
@@ -470,14 +546,15 @@ export function openRequestWorkflow(options: {
     ) VALUES (?, ?, ?, ?, ?, ?)
   `);
   const selectCandidateAttachments = database.prepare(`
-    SELECT attachment_id, request_id, candidate_id, content_hash, filename, content
+    SELECT attachment_id, request_id, candidate_id, content_hash, filename, content, staged_file_id
     FROM candidate_attachments
     WHERE request_id = ?
   `);
   const insertCandidateAttachment = database.prepare(`
     INSERT OR REPLACE INTO candidate_attachments (
-      attachment_id, request_id, candidate_id, candidate_identity_hash, content_hash, filename, content
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      attachment_id, request_id, candidate_id, candidate_identity_hash,
+      content_hash, filename, content, staged_file_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const deleteCandidateAttachments = database.prepare(`
     DELETE FROM candidate_attachments WHERE request_id = ?
@@ -496,7 +573,7 @@ export function openRequestWorkflow(options: {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const selectCandidateAttachment = database.prepare(`
-    SELECT attachment_id, request_id, candidate_id, content_hash, filename, content
+    SELECT attachment_id, request_id, candidate_id, content_hash, filename, content, staged_file_id
     FROM candidate_attachments
     WHERE attachment_id = ?
   `);
@@ -512,7 +589,7 @@ export function openRequestWorkflow(options: {
   const storeCandidateAttachments = (
     requestId: string,
     candidates: SubtitleCandidate[],
-    attachments: ReturnType<typeof prepareSyntheticCandidates>["attachments"],
+    attachments: CandidatePreparation["attachments"],
   ) => {
     const candidatesById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
     for (const attachment of attachments) {
@@ -520,7 +597,9 @@ export function openRequestWorkflow(options: {
       if (candidate === undefined) continue;
       insertCandidateAttachment.run(
         randomUUID(), requestId, candidate.id, candidate.identityEvidenceHash,
-        candidate.contentHash, attachment.filename, attachment.content,
+        candidate.contentHash, attachment.filename,
+        "content" in attachment ? attachment.content : null,
+        "stagedFileId" in attachment ? attachment.stagedFileId : null,
       );
     }
   };
@@ -635,6 +714,10 @@ export function openRequestWorkflow(options: {
         command.video.libraryId,
         command.video.id,
         command.video.label,
+        command.video.savedVideoId ?? null,
+        command.video.openSubtitlesSearchIdentity === undefined
+          ? null
+          : JSON.stringify(command.video.openSubtitlesSearchIdentity),
         command.language,
         "active",
       ) as RequestRow | undefined;
@@ -689,10 +772,7 @@ export function openRequestWorkflow(options: {
         next_actions_json: string;
       } | undefined;
       if (existing !== undefined) return;
-      const preparation = prepareSyntheticCandidates(
-        { libraryId: row.library_id, id: row.video_id, label: row.video_label },
-        row.language,
-      );
+      const preparation = preparationAdapter.prepare(toPreparationVideo(row), row.language);
       insertPreparation.run(
         request.id,
         JSON.stringify(preparation.candidates),
@@ -710,10 +790,7 @@ export function openRequestWorkflow(options: {
       if (row === undefined || row.version !== request.version || row.lifecycle !== "active") {
         throw new RequestVersionConflictError();
       }
-      const preparation = prepareSyntheticCandidates(
-        { libraryId: row.library_id, id: row.video_id, label: row.video_label },
-        row.language,
-      );
+      const preparation = preparationAdapter.prepare(toPreparationVideo(row), row.language);
       replacePreparation.run(
         JSON.stringify(preparation.candidates), preparation.recommendedCandidateId,
         preparation.outcome, preparation.explanation, JSON.stringify(preparation.nextActions), request.id,
@@ -850,10 +927,14 @@ export function openRequestWorkflow(options: {
       const rejected = (selectCandidateRejections.all(attachment.request_id) as CandidateRejectionRow[]).some((item) =>
         item.candidate_id === candidate.id && item.candidate_identity_hash === candidate.identityEvidenceHash);
       if (rejected) return undefined;
+      const content = attachment.content ?? (
+        attachment.staged_file_id === null ? undefined : options.candidateFiles?.read(attachment.staged_file_id)
+      );
+      if (content === undefined) return undefined;
       return {
         filename: attachment.filename,
         contentHash: attachment.content_hash,
-        content: attachment.content,
+        content,
       };
     },
 
