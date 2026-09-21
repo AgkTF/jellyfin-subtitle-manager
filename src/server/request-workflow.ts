@@ -624,6 +624,7 @@ export function openRequestWorkflow(options: {
     FROM candidate_attachments
     WHERE attachment_id = ?
   `);
+  options.candidateFiles?.reconcile?.();
 
   const readPreparationCandidates = (candidatesJson: string): SubtitleCandidate[] => {
     const candidates = JSON.parse(candidatesJson) as SubtitleCandidate[];
@@ -693,15 +694,20 @@ export function openRequestWorkflow(options: {
       },
     ]));
     const attachmentRows = selectCandidateAttachments.all(requestId) as CandidateAttachmentRow[];
-    const attachments = new Map(attachmentRows.map((attachment) => [
-      `${attachment.candidate_id}\0${attachment.content_hash}`,
-      {
-        id: attachment.attachment_id,
-        filename: attachment.filename,
-        contentHash: attachment.content_hash,
-        downloadUrl: `/api/candidate-attachments/${encodeURIComponent(attachment.attachment_id)}`,
-      },
-    ]));
+    const attachments = new Map(attachmentRows
+      .filter((attachment) => attachment.content !== null ||
+        (attachment.staged_file_id !== null && options.candidateFiles?.read(
+          attachment.staged_file_id, attachment.content_hash,
+        ) !== undefined))
+      .map((attachment) => [
+        `${attachment.candidate_id}\0${attachment.content_hash}`,
+        {
+          id: attachment.attachment_id,
+          filename: attachment.filename,
+          contentHash: attachment.content_hash,
+          downloadUrl: `/api/candidate-attachments/${encodeURIComponent(attachment.attachment_id)}`,
+        },
+      ]));
     const candidates = preparationCandidates?.map((candidate) => ({
       ...candidate,
       rejection: rejections.get(`${candidate.id}\0${candidate.identityEvidenceHash}`) ?? null,
@@ -989,7 +995,9 @@ export function openRequestWorkflow(options: {
         item.candidate_id === candidate.id && item.candidate_identity_hash === candidate.identityEvidenceHash);
       if (rejected) return undefined;
       const content = attachment.content ?? (
-        attachment.staged_file_id === null ? undefined : options.candidateFiles?.read(attachment.staged_file_id)
+        attachment.staged_file_id === null ? undefined : options.candidateFiles?.read(
+          attachment.staged_file_id, attachment.content_hash,
+        )
       );
       if (content === undefined) return undefined;
       return {

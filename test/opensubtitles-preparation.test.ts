@@ -13,6 +13,7 @@ import {
   type OpenSubtitlesHttpRequest,
   type OpenSubtitlesHttpTransport,
 } from "../src/server/opensubtitles-preparation.js";
+import type { PreparationVideo } from "../src/server/candidate-preparation.js";
 import { openPrivateCandidateStore } from "../src/server/private-candidate-store.js";
 import { openRequestWorkflow } from "../src/server/request-workflow.js";
 
@@ -30,7 +31,10 @@ const srt = Buffer.from([
 class SyntheticOpenSubtitlesHttp implements OpenSubtitlesHttpTransport {
   readonly requests: OpenSubtitlesHttpRequest[] = [];
 
-  constructor(private readonly payload = srt) {}
+  constructor(
+    private readonly payload = srt,
+    private readonly candidate = { subtitleId: "918273", fileId: 456789 },
+  ) {}
 
   request(request: OpenSubtitlesHttpRequest) {
     this.requests.push(request);
@@ -45,7 +49,7 @@ class SyntheticOpenSubtitlesHttp implements OpenSubtitlesHttpTransport {
           per_page: 50,
           page: 1,
           data: [{
-            id: "918273",
+            id: this.candidate.subtitleId,
             attributes: {
               language: "ar",
               release: "Quiet.Orbit.2025.1080p.WEB-DL",
@@ -56,7 +60,7 @@ class SyntheticOpenSubtitlesHttp implements OpenSubtitlesHttpTransport {
               moviehash_match: false,
               from_trusted: true,
               download_count: 100,
-              files: [{ file_id: 456789, file_name: "Quiet.Orbit.2025.ar.srt" }],
+              files: [{ file_id: this.candidate.fileId, file_name: "Quiet.Orbit.2025.ar.srt" }],
             },
           }],
         }), "utf8"),
@@ -67,7 +71,7 @@ class SyntheticOpenSubtitlesHttp implements OpenSubtitlesHttpTransport {
         status: 200,
         headers: { "content-type": "application/json" },
         body: Buffer.from(JSON.stringify({
-          link: "https://fixture-payload.invalid/download/456789",
+          link: `https://fixture-payload.invalid/download/${this.candidate.fileId}`,
           file_name: "Quiet.Orbit.2025.ar.srt",
           remaining: 99,
         }), "utf8"),
@@ -192,6 +196,41 @@ test("an explicit request prepares and restores one privately staged OpenSubtitl
   const download = await server.inject({ method: "GET", url: candidate.attachment.downloadUrl });
   assert.deepEqual(download.rawPayload, srt);
   assert.equal(transport.requests.length, 3);
+});
+
+test("identical bytes from distinct provider identities reuse one private staged candidate", (context) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "opensubtitles-duplicate-bytes-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const video: PreparationVideo = {
+    libraryId: "synthetic",
+    id: "quiet-orbit-2025",
+    label: "Quiet Orbit (2025)",
+    savedVideoId: "quiet-orbit",
+    openSubtitlesSearchIdentity: {
+      provider: "opensubtitles-v1",
+      libraryId: "synthetic",
+      videoId: "quiet-orbit",
+      savedIdentityId: "quiet-orbit-2025",
+      selectedFileEvidenceHash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      title: { kind: "movie-imdb", imdbId: "1234567" },
+    },
+  };
+  const firstFiles = openPrivateCandidateStore({ root: directory });
+  const first = createOpenSubtitlesPreparation({
+    transport: new SyntheticOpenSubtitlesHttp(), candidateFiles: firstFiles,
+    apiKey: "fixture-api-key", token: "fixture-user-token", payloadOrigins: ["https://fixture-payload.invalid"],
+  }).prepare(video, "ar");
+  assert.equal(first.outcome, "candidates-found");
+  firstFiles.close();
+
+  const secondFiles = openPrivateCandidateStore({ root: directory });
+  context.after(() => secondFiles.close());
+  const second = createOpenSubtitlesPreparation({
+    transport: new SyntheticOpenSubtitlesHttp(srt, { subtitleId: "918274", fileId: 456790 }), candidateFiles: secondFiles,
+    apiKey: "fixture-api-key", token: "fixture-user-token", payloadOrigins: ["https://fixture-payload.invalid"],
+  }).prepare(video, "ar");
+  assert.equal(second.outcome, "duplicate-candidate");
+  assert.equal(readdirSync(directory).length, 1);
 });
 
 test("malformed subtitle bytes never become a staged candidate", (context) => {
