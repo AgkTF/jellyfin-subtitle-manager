@@ -53,6 +53,9 @@ class SyntheticOpenSubtitlesHttp implements OpenSubtitlesHttpTransport {
               hearing_impaired: false,
               machine_translated: false,
               ai_translated: false,
+              moviehash_match: false,
+              from_trusted: true,
+              download_count: 100,
               files: [{ file_id: 456789, file_name: "Quiet.Orbit.2025.ar.srt" }],
             },
           }],
@@ -203,7 +206,7 @@ test("malformed subtitle bytes never become a staged candidate", (context) => {
     payloadOrigins: ["https://fixture-payload.invalid"],
   });
 
-  assert.throws(() => preparation.prepare({
+  const result = preparation.prepare({
     libraryId: "synthetic",
     id: "quiet-orbit-2025",
     label: "Quiet Orbit (2025)",
@@ -216,7 +219,9 @@ test("malformed subtitle bytes never become a staged candidate", (context) => {
       selectedFileEvidenceHash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
       title: { kind: "movie-imdb", imdbId: "1234567" },
     },
-  }, "ar"), /plain SRT/);
+  }, "ar");
+  assert.equal(result.outcome, "unsafe-content");
+  assert.equal(result.candidates.length, 0);
   assert.deepEqual(readdirSync(directory), []);
 });
 

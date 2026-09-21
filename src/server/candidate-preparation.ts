@@ -42,6 +42,10 @@ export interface SubtitleCandidate {
     name: "opensubtitles-v1";
     subtitleId: string;
     fileId: number;
+    moviehashMatch?: boolean;
+    hearingImpaired?: boolean;
+    fromTrusted?: boolean;
+    downloadCount?: number;
   };
   timing: {
     status: "unmeasured";
@@ -63,7 +67,22 @@ export type CandidateAttachmentMaterial =
   | { candidateId: string; filename: string; content: Buffer }
   | { candidateId: string; filename: string; stagedFileId: string };
 
-export type PreparationOutcome = "candidates-found" | "no-suitable-candidate" | "blocked" | "failed";
+export type PreparationOutcome =
+  | "candidates-found"
+  | "no-candidates"
+  | "no-suitable-candidate"
+  | "blocked"
+  | "authentication-failed"
+  | "quota-exhausted"
+  | "transport-failed"
+  | "timed-out"
+  | "malformed-provider-response"
+  | "unsafe-content"
+  | "provider-failed"
+  | "duplicate-candidate"
+  | "payload-budget-exhausted"
+  | "run-deadline-exhausted"
+  | "failed";
 
 export interface CandidatePreparation {
   outcome: PreparationOutcome;

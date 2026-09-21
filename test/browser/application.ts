@@ -57,6 +57,7 @@ export const test = base.extend<{
                   language: "ar", release: "Quiet.Orbit.2025.1080p.WEB-DL",
                   foreign_parts_only: false, hearing_impaired: false,
                   machine_translated: false, ai_translated: false,
+                  moviehash_match: false, from_trusted: true, download_count: 100,
                   files: [{ file_id: 456789, file_name: "Quiet.Orbit.2025.ar.srt" }],
                 },
               }],
