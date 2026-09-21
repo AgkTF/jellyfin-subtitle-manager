@@ -404,16 +404,29 @@ function validateHttpsOrigin(url: URL): void {
   }
 }
 
+function hasContainerSignature(body: Buffer): boolean {
+  const startsWith = (...bytes: number[]) => body.subarray(0, bytes.length).equals(Buffer.from(bytes));
+  return startsWith(0x50, 0x4b, 0x03, 0x04) || startsWith(0x50, 0x4b, 0x05, 0x06) ||
+    startsWith(0x50, 0x4b, 0x07, 0x08) || startsWith(0x1f, 0x8b) ||
+    startsWith(0x52, 0x61, 0x72, 0x21, 0x1a, 0x07) || startsWith(0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c) ||
+    startsWith(0x42, 0x5a, 0x68) || startsWith(0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00) ||
+    startsWith(0x28, 0xb5, 0x2f, 0xfd) || startsWith(0x4c, 0x5a, 0x49, 0x50) ||
+    startsWith(0x4d, 0x53, 0x43, 0x46) || startsWith(0x21, 0x3c, 0x61, 0x72, 0x63, 0x68, 0x3e) ||
+    body.subarray(0, 6).toString("ascii") === "070701" || body.subarray(0, 6).toString("ascii") === "070702" ||
+    body.length >= 265 && body.subarray(257, 262).toString("ascii") === "ustar";
+}
+
+function hasUnsafePathOrLinkEvidence(text: string): boolean {
+  return /(?:https?|ftp|file):\/\//iu.test(text) ||
+    /\.\.[/\\]|(?:^|[<[(\s])[/\\]{1,2}|(?:^|[<[(\s])[A-Za-z]:[/\\]/u.test(text);
+}
+
 function validatePlainSrt(response: OpenSubtitlesHttpResponse): Buffer {
   if (response.status < 200 || response.status >= 300) throw mapHttpFailure(response.status);
   const rawContentType = header(response, "content-type")?.split(";", 1)[0].trim().toLowerCase();
   if (rawContentType !== undefined && !payloadContentTypes.has(rawContentType)) throw new PreparationFailure("unsafe-content");
   const body = decodeHttpBody(response, MAX_PAYLOAD_TRANSFER_BYTES, MAX_PAYLOAD_BYTES, "unsafe-content");
-  if (body.length === 0 || body.length > MAX_PAYLOAD_BYTES) throw new PreparationFailure("unsafe-content");
-  if (body.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) ||
-      body.subarray(0, 2).equals(Buffer.from([0x1f, 0x8b])) ||
-      body.subarray(0, 6).toString("ascii") === "Rar!\u001a\u0007" ||
-      body.subarray(0, 6).equals(Buffer.from("7z\xbc\xaf\u0027\u001c", "latin1"))) {
+  if (body.length === 0 || body.length > MAX_PAYLOAD_BYTES || hasContainerSignature(body)) {
     throw new PreparationFailure("unsafe-content");
   }
   let text: string;
@@ -439,7 +452,7 @@ function validatePlainSrt(response: OpenSubtitlesHttpResponse): Buffer {
     if (lines.length < 3 || lines.length > 22 || !/^\d+$/u.test(lines[0])) throw new PreparationFailure("unsafe-content");
     const number = Number(lines[0]);
     const timing = /^(\d{2}):(\d{2}):(\d{2}),(\d{3}) --> (\d{2}):(\d{2}):(\d{2}),(\d{3})$/u.exec(lines[1]);
-    if (number <= previousNumber || timing === null) throw new PreparationFailure("unsafe-content");
+    if (!Number.isSafeInteger(number) || number <= previousNumber || timing === null) throw new PreparationFailure("unsafe-content");
     const values = timing.slice(1).map(Number);
     if (values[0] > 47 || values[1] > 59 || values[2] > 59 || values[4] > 47 || values[5] > 59 || values[6] > 59) {
       throw new PreparationFailure("unsafe-content");
@@ -447,7 +460,8 @@ function validatePlainSrt(response: OpenSubtitlesHttpResponse): Buffer {
     const start = (((values[0] * 60 + values[1]) * 60 + values[2]) * 1000) + values[3];
     const end = (((values[4] * 60 + values[5]) * 60 + values[6]) * 1000) + values[7];
     const cueText = lines.slice(2).join("\n");
-    if (start >= end || start < previousStart || cueText.trim().length === 0 || Buffer.byteLength(cueText, "utf8") > 8 * 1024) {
+    if (start >= end || start < previousStart || cueText.trim().length === 0 || Buffer.byteLength(cueText, "utf8") > 8 * 1024 ||
+        hasUnsafePathOrLinkEvidence(cueText)) {
       throw new PreparationFailure("unsafe-content");
     }
     previousNumber = number;
@@ -624,6 +638,12 @@ export function createOpenSubtitlesPreparation(options: {
             if (fields.remaining === 0) throw new PreparationFailure("quota-exhausted");
             const original = validatePlainSrt(payloadRequest(fields.link));
             const contentHash = createHash("sha256").update(original).digest("hex");
+            const existingStagedFileId = options.candidateFiles.findByContentHash?.(contentHash);
+            if (existingStagedFileId !== undefined) {
+              lastCandidateFailure = new PreparationFailure("duplicate-candidate");
+              sawDurableDuplicate = true;
+              continue;
+            }
             const candidateId = `opensubtitles-${selected.subtitleId}-${selected.file.file_id}`;
             const provider = {
               name: "opensubtitles-v1" as const,
@@ -643,7 +663,12 @@ export function createOpenSubtitlesPreparation(options: {
               release: selected.release,
               contentHash,
             })).digest("hex");
-            const stagedFileId = options.candidateFiles.stage(original);
+            let stagedFileId: string;
+            try {
+              stagedFileId = options.candidateFiles.stage(original);
+            } catch {
+              throw new PreparationFailure("unsafe-content");
+            }
             const candidate: SubtitleCandidate = {
               id: candidateId,
               label: `OpenSubtitles candidate ${selected.subtitleId}`,
