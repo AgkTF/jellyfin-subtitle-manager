@@ -17,6 +17,8 @@ test("explicitly prepares bounded synthetic candidates and retains the recommend
   await detail.getByRole("button", { name: "Prepare candidates" }).click();
   const candidates = detail.getByRole("region", { name: "Prepared subtitle candidates" });
   await expect(candidates).toContainText("Provider and network activity: none");
+  await expect(candidates.getByRole("listitem")).toHaveCount(1);
+  await candidates.getByRole("button", { name: "Show 2 alternatives" }).click();
   await expect(candidates.getByRole("listitem")).toHaveCount(3);
   await expect(candidates).toContainText("Recommended");
   await expect(candidates).toContainText("Arabic authorship remains unknown");
@@ -27,6 +29,8 @@ test("explicitly prepares bounded synthetic candidates and retains the recommend
   await application.restart();
   await page.reload();
   await page.getByRole("row", { name: /Quiet Orbit \(2025\).*Arabic.*Active/ }).click();
-  await expect(page.getByRole("region", { name: "Prepared subtitle candidates" }).getByRole("listitem")).toHaveCount(3);
+  const restoredCandidates = page.getByRole("region", { name: "Prepared subtitle candidates" });
+  await restoredCandidates.getByRole("button", { name: "Show 2 alternatives" }).click();
+  await expect(restoredCandidates.getByRole("listitem")).toHaveCount(3);
   expect(application.workflow.getRequest(application.workflow.listRequests({ lifecycle: "active" }).requests[0].id)?.preparation?.candidates).toHaveLength(3);
 });

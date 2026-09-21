@@ -171,6 +171,22 @@ test("three malformed links spend reservations before download creation and no f
   assert.equal(transport.requests.length, 4);
 });
 
+test("authentication failure stops advancement after an earlier candidate payload succeeded", (context) => {
+  const transport = new Routes((request, index) => {
+    if (index === 0) return search([1, 2, 3]);
+    if (index === 1) return json({ link: "https://fixture-payload.invalid/1", remaining: 2 });
+    if (index === 2) return { status: 200, headers: { "content-type": "text/plain" }, body: validSrt };
+    if (index === 3) return { status: 401, headers: { "content-type": "application/json" }, body: Buffer.from("{}") };
+    throw new Error(`Candidate advancement continued after authentication failure: ${request.url}`);
+  });
+
+  const prepared = prepareWithTransport(context, transport);
+  assert.equal(prepared.outcome, "authentication-failed");
+  assert.equal(prepared.candidates.length, 0);
+  assert.equal(transport.requests.length, 4);
+  assert.equal(JSON.parse(transport.requests[3].body?.toString("utf8") ?? "{}").file_id, 2);
+});
+
 test("a resolved redirect target over 2048 ASCII characters is never requested", (context) => {
   const prefix = "https://fixture-payload.invalid/";
   const initial = `${prefix}${"a".repeat(2_048 - prefix.length)}`;

@@ -21,6 +21,7 @@ test("preserves candidate evidence through preview, deferral, retry, and restart
 
   const detail = page.getByRole("region", { name: "Subtitle request detail" });
   const candidates = detail.getByRole("region", { name: "Prepared subtitle candidates" });
+  await candidates.getByRole("button", { name: "Show 2 alternatives" }).click();
   const firstCandidate = candidates.getByRole("listitem").nth(0);
   const secondCandidate = candidates.getByRole("listitem").nth(1);
   const preview = candidates.getByRole("region", { name: "Selected candidate preview" });
@@ -54,6 +55,7 @@ test("preserves candidate evidence through preview, deferral, retry, and restart
   await page.getByRole("button", { name: "Deferred 1" }).first().click();
   const deferredRow = page.getByRole("row", { name: /Quiet Orbit \(2025\).*Arabic.*Deferred/ });
   await deferredRow.click();
+  await candidates.getByRole("button", { name: "Show 2 alternatives" }).click();
   await expect(detail.getByText("Deferred · version 2")).toBeVisible();
   await expect(detail).toContainText("Targeted samples remained usable.");
   await expect(detail).toContainText("Rejected: The alternative is not suitable.");
@@ -71,6 +73,7 @@ test("preserves candidate evidence through preview, deferral, retry, and restart
   await application.restart();
   await page.reload();
   await page.getByRole("row", { name: /Quiet Orbit \(2025\).*Arabic.*Active/ }).click();
+  await candidates.getByRole("button", { name: "Show 2 alternatives" }).click();
   await expect(detail.getByText("Active · version 3")).toBeVisible();
   await expect(detail).toContainText("Targeted samples remained usable.");
   await expect(detail).toContainText("Rejected: The alternative is not suitable.");

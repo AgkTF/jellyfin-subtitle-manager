@@ -41,7 +41,7 @@ export const test = base.extend<{
     const candidateFiles = preparationMode === "opensubtitles"
       ? openPrivateCandidateStore({ root: path.join(directory, "candidate-files") })
       : undefined;
-    const payload = Buffer.from("1\r\n00:00:01,000 --> 00:00:03,000\r\nFixture subtitle.\r\n", "utf8");
+    const payload = (fileId: number) => Buffer.from(`1\r\n00:00:01,000 --> 00:00:03,000\r\nFixture subtitle ${fileId}.\r\n`, "utf8");
     const transport: OpenSubtitlesHttpTransport = {
       request(request) {
         const url = new URL(request.url);
@@ -50,29 +50,26 @@ export const test = base.extend<{
             status: 200,
             headers: { "content-type": "application/json" },
             body: Buffer.from(JSON.stringify({
-              total_pages: 1, total_count: 1, per_page: 50, page: 1,
-              data: [{
-                id: "918273",
-                attributes: {
-                  language: "ar", release: "Quiet.Orbit.2025.1080p.WEB-DL",
-                  foreign_parts_only: false, hearing_impaired: false,
-                  machine_translated: false, ai_translated: false,
-                  moviehash_match: false, from_trusted: true, download_count: 100,
-                  files: [{ file_id: 456789, file_name: "Quiet.Orbit.2025.ar.srt" }],
-                },
-              }],
+              total_pages: 1, total_count: 3, per_page: 50, page: 1,
+              data: [
+                { id: "918273", attributes: { language: "ar", release: "Quiet.Orbit.2025.1080p.WEB-DL", foreign_parts_only: false, hearing_impaired: false, machine_translated: false, ai_translated: false, moviehash_match: false, from_trusted: true, download_count: 100, files: [{ file_id: 456789, file_name: "Quiet.Orbit.2025.ar.srt" }] } },
+                { id: "918274", attributes: { language: "ar", release: "Quiet.Orbit.2025.BluRay", foreign_parts_only: false, hearing_impaired: false, machine_translated: false, ai_translated: false, moviehash_match: false, from_trusted: true, download_count: 80, files: [{ file_id: 456790, file_name: "Quiet.Orbit.2025.bluray.ar.srt" }] } },
+                { id: "918275", attributes: { language: "ar", release: "Quiet.Orbit.2025.HDTV", foreign_parts_only: false, hearing_impaired: true, machine_translated: false, ai_translated: false, moviehash_match: false, from_trusted: false, download_count: 60, files: [{ file_id: 456791, file_name: "Quiet.Orbit.2025.hdtv.ar.srt" }] } },
+              ],
             }), "utf8"),
           };
         }
         if (request.method === "POST" && url.pathname === "/api/v1/download") {
+          const fileId = JSON.parse(request.body?.toString("utf8") ?? "{}").file_id as number;
           return {
             status: 200,
             headers: { "content-type": "application/json" },
-            body: Buffer.from(JSON.stringify({ link: "https://fixture-payload.invalid/download/456789" }), "utf8"),
+            body: Buffer.from(JSON.stringify({ link: `https://fixture-payload.invalid/download/${fileId}` }), "utf8"),
           };
         }
         if (request.method === "GET" && url.hostname === "fixture-payload.invalid") {
-          return { status: 200, headers: { "content-type": "application/x-subrip" }, body: payload };
+          const fileId = Number(url.pathname.split("/").at(-1));
+          return { status: 200, headers: { "content-type": "application/x-subrip" }, body: payload(fileId) };
         }
         throw new Error(`Unexpected fixture HTTP request: ${request.method} ${request.url}`);
       },

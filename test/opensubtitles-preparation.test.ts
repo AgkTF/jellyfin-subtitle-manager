@@ -198,7 +198,104 @@ test("an explicit request prepares and restores one privately staged OpenSubtitl
   assert.equal(transport.requests.length, 3);
 });
 
-test("identical bytes from distinct provider identities reuse one private staged candidate", (context) => {
+test("prepares one ranked recommendation and two alternatives within the payload budget", (context) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "opensubtitles-multiple-candidates-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const candidateFiles = openPrivateCandidateStore({ root: directory });
+  context.after(() => candidateFiles.close());
+  const payloads = new Map([
+    [11, Buffer.from("1\r\n00:00:01,000 --> 00:00:02,000\r\nFirst candidate.\r\n")],
+    [12, Buffer.from("1\r\n00:00:01,000 --> 00:00:02,000\r\nSecond candidate.\r\n")],
+    [13, Buffer.from("1\r\n00:00:01,000 --> 00:00:02,000\r\nThird candidate.\r\n")],
+  ]);
+  const requests: OpenSubtitlesHttpRequest[] = [];
+  const transport: OpenSubtitlesHttpTransport = {
+    request(request) {
+      requests.push(request);
+      const url = new URL(request.url);
+      if (request.method === "GET" && url.hostname === "api.opensubtitles.com") {
+        return {
+          status: 200, headers: { "content-type": "application/json" },
+          body: Buffer.from(JSON.stringify({
+            total_pages: 1, total_count: 3, per_page: 50, page: 1,
+            data: [
+              { id: "103", attributes: { language: "ar", release: "Release.C", foreign_parts_only: false, hearing_impaired: true, machine_translated: false, ai_translated: false, moviehash_match: false, from_trusted: false, download_count: 5, files: [{ file_id: 13, file_name: "c.srt" }] } },
+              { id: "101", attributes: { language: "ar", release: "Release.A", foreign_parts_only: false, hearing_impaired: false, machine_translated: false, ai_translated: false, moviehash_match: true, from_trusted: true, download_count: 20, files: [{ file_id: 11, file_name: "a.srt" }] } },
+              { id: "102", attributes: { language: "ar", release: "Release.B", foreign_parts_only: false, hearing_impaired: false, machine_translated: false, ai_translated: false, moviehash_match: false, from_trusted: true, download_count: 10, files: [{ file_id: 12, file_name: "b.srt" }] } },
+            ],
+          })),
+        };
+      }
+      if (request.method === "POST") {
+        const fileId = JSON.parse(request.body?.toString("utf8") ?? "{}").file_id as number;
+        return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ link: `https://fixture-payload.invalid/${fileId}`, remaining: 10 })) };
+      }
+      const fileId = Number(url.pathname.slice(1));
+      return { status: 200, headers: { "content-type": "application/x-subrip" }, body: payloads.get(fileId) ?? Buffer.alloc(0) };
+    },
+  };
+  const result = createOpenSubtitlesPreparation({
+    transport, candidateFiles, apiKey: "fixture-key", token: "fixture-token",
+    payloadOrigins: ["https://fixture-payload.invalid"],
+  }).prepare({
+    libraryId: "synthetic", id: "quiet-orbit-2025", label: "Quiet Orbit (2025)", savedVideoId: "quiet-orbit",
+    openSubtitlesSearchIdentity: {
+      provider: "opensubtitles-v1", libraryId: "synthetic", videoId: "quiet-orbit", savedIdentityId: "quiet-orbit-2025",
+      selectedFileEvidenceHash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      title: { kind: "movie-imdb", imdbId: "1234567" },
+      movieHash: { algorithm: "opensubtitles-moviehash-v1", value: "0123456789abcdef", sourceByteLength: 100, selectedFileEvidenceHash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" },
+    },
+  }, "ar");
+
+  assert.equal(result.outcome, "candidates-found");
+  assert.deepEqual(result.candidates.map((candidate) => candidate.provider?.fileId), [11, 12, 13]);
+  assert.equal(result.recommendedCandidateId, "opensubtitles-101-11");
+  assert.match(result.candidates[0].recommendationReason, /Arabic.*standard dialogue.*Release\.A.*provider-reported movie-hash match.*trusted-source claim/i);
+  assert.equal(result.attachments.length, 3);
+  assert.equal(requests.length, 7);
+});
+
+test("duplicate provider identity and bytes consume attempts without creating alternatives", (context) => {
+  const directory = mkdtempSync(path.join(tmpdir(), "opensubtitles-run-duplicates-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const candidateFiles = openPrivateCandidateStore({ root: directory });
+  context.after(() => candidateFiles.close());
+  const attempts: number[] = [];
+  const posts: number[] = [];
+  const body = Buffer.from("1\r\n00:00:01,000 --> 00:00:02,000\r\nSame bytes.\r\n");
+  const transport: OpenSubtitlesHttpTransport = {
+    request(request) {
+      const url = new URL(request.url);
+      if (request.method === "GET" && url.hostname === "api.opensubtitles.com") return {
+        status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({
+          total_pages: 1, total_count: 3, per_page: 50, page: 1,
+          data: [
+            { id: "201", attributes: { language: "ar", release: "One", foreign_parts_only: false, hearing_impaired: false, machine_translated: false, ai_translated: false, from_trusted: true, download_count: 30, files: [{ file_id: 21, file_name: "one.srt" }] } },
+            { id: "201", attributes: { language: "ar", release: "One alternate file", foreign_parts_only: false, hearing_impaired: false, machine_translated: false, ai_translated: false, from_trusted: true, download_count: 20, files: [{ file_id: 22, file_name: "one-alt.srt" }] } },
+            { id: "202", attributes: { language: "ar", release: "Two", foreign_parts_only: false, hearing_impaired: false, machine_translated: false, ai_translated: false, from_trusted: true, download_count: 10, files: [{ file_id: 23, file_name: "two.srt" }] } },
+          ],
+        })) };
+      if (request.method === "POST") {
+        const fileId = JSON.parse(request.body?.toString("utf8") ?? "{}").file_id as number;
+        posts.push(fileId);
+        return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ link: `https://fixture-payload.invalid/${fileId}`, remaining: 10 })) };
+      }
+      return { status: 200, headers: { "content-type": "application/x-subrip" }, body };
+    },
+  };
+  const adapter = createOpenSubtitlesPreparation({ transport, candidateFiles, apiKey: "key", token: "token", payloadOrigins: ["https://fixture-payload.invalid"] });
+  const result = adapter.prepare({
+    libraryId: "synthetic", id: "quiet-orbit-2025", label: "Quiet Orbit", savedVideoId: "quiet-orbit",
+    openSubtitlesSearchIdentity: { provider: "opensubtitles-v1", libraryId: "synthetic", videoId: "quiet-orbit", savedIdentityId: "quiet-orbit-2025", selectedFileEvidenceHash: "a".repeat(64), title: { kind: "movie-imdb", imdbId: "123" } },
+  }, "ar", { reservePayloadAttempt(fileId) { attempts.push(fileId); return attempts.length; } });
+
+  assert.deepEqual(attempts, [21, 22, 23]);
+  assert.deepEqual(posts, [21, 23]);
+  assert.equal(result.outcome, "candidates-found");
+  assert.equal(result.candidates.length, 1);
+});
+
+test("identical bytes from distinct provider identities are rejected without staging another file", (context) => {
   const directory = mkdtempSync(path.join(tmpdir(), "opensubtitles-duplicate-bytes-"));
   context.after(() => rmSync(directory, { recursive: true, force: true }));
   const video: PreparationVideo = {
@@ -230,6 +327,7 @@ test("identical bytes from distinct provider identities reuse one private staged
     apiKey: "fixture-api-key", token: "fixture-user-token", payloadOrigins: ["https://fixture-payload.invalid"],
   }).prepare(video, "ar");
   assert.equal(second.outcome, "duplicate-candidate");
+  assert.equal(second.attachments.length, 0);
   assert.equal(readdirSync(directory).length, 1);
 });
 
