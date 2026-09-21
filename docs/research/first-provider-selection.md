@@ -20,11 +20,11 @@ This selection does **not** establish Arabic coverage, synchronization, complete
 
 `GET /subtitles` supports precise identity by `imdb_id`/`tmdb_id`, TV parent ID plus season/episode, a 16-character OpenSubtitles `moviehash`, or filename/text `query`. It accepts comma-separated `languages`, `hearing_impaired` (`include|exclude|only`), `foreign_parts_only` (the forced/foreign-parts signal: `exclude|include|only`), `machine_translated`, `ai_translated`, `trusted_sources`, `moviehash_match`, ordering, and `page`. The response supplies `total_pages`, `total_count`, `per_page`, and `page`. Search documentation explicitly says HTTP redirects must be followed. [OS1][OS3]
 
-For each subtitle it supplies provider/subtitle IDs, language, download counts, HI, FPS, trust, foreign-parts-only, upload date, AI- and machine-translated flags, release/comments, uploader identity/rank, title/episode identifiers, and one or more `files` with `file_id`, disc number, and filename. [OS1]
+For each subtitle it supplies provider/subtitle IDs, language, download counts, HI, FPS, trust, foreign-parts-only, upload date, AI- and machine-translated flags, release/comments, uploader identity/rank, title/episode identifiers, and one or more `files` with `file_id`, disc number, and filename. When a `moviehash` is supplied, the API adds a boolean `moviehash_match` field to the response and orders matching subtitles first. [OS1]
 
 The published language table identifies English as `en` and Arabic as `ar`. [OS4]
 
-**Inference for implementation:** prefer a known IMDb/TMDB identity and include the movie hash when available; do not label a result “hash matched,” “human-written,” or “synchronized” because the response schema has no match-reason or verified-human field. `from_trusted` and uploader rank are provenance only. A false machine/AI flag is not proof of human authorship.
+**Inference for implementation:** prefer a known IMDb/TMDB identity and include the movie hash when available. Preserve `moviehash_match` and the submitted hash as provider match evidence; a candidate may be described as **provider-reported hash matched** only when that boolean is true, never as independently identity-verified or synchronized. Do not label a result “human-written”: the response has no verified-human field. `from_trusted` and uploader rank are provenance only. A false machine/AI flag is not proof of human authorship.
 
 ### Download and payload
 
