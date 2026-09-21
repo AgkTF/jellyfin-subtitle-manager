@@ -863,10 +863,12 @@ h1 {
   min-width: 0;
   grid-template-columns: minmax(10rem, max-content) minmax(0, 1fr);
   gap: 0.35rem 1rem;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .publication-context dt {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .publication-context dd {
@@ -881,6 +883,7 @@ h1 {
 
 .publication-exact-value {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-variant-ligatures: none;
   overflow-wrap: anywhere;
   word-break: break-word;
 }

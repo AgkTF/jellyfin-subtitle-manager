@@ -50,6 +50,28 @@ for (const viewport of [
     const verification = page.getByRole("region", { name: "Client verification" });
     await publication.getByRole("button", { name: "Review publication approval" }).click();
 
+    const publicationContext = publication.getByLabel("Exact publication context");
+    const typography = await publicationContext.evaluate((context) => {
+      const list = context.querySelector("dl");
+      const term = context.querySelector("dt");
+      const exactValue = context.querySelector<HTMLElement>(".publication-exact-value");
+      if (list === null || term === null || exactValue === null) throw new Error("Publication context typography is incomplete");
+      return {
+        listFontSize: getComputedStyle(list).fontSize,
+        listLineHeight: getComputedStyle(list).lineHeight,
+        termFontWeight: getComputedStyle(term).fontWeight,
+        exactValueFontFamily: getComputedStyle(exactValue).fontFamily,
+        exactValueFontVariantLigatures: getComputedStyle(exactValue).fontVariantLigatures,
+      };
+    });
+    expect(typography).toEqual({
+      listFontSize: "11px",
+      listLineHeight: "16.5px",
+      termFontWeight: "600",
+      exactValueFontFamily: expect.stringContaining("ui-monospace"),
+      exactValueFontVariantLigatures: "none",
+    });
+
     await expect(publication).toContainText("Request version 1");
     await expect(publication).toContainText("Quiet Orbit (2025)");
     await expect(publication).toContainText("quiet-orbit-2025");
