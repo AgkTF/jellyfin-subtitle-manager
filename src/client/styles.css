@@ -592,19 +592,23 @@ h1 {
 }
 
 .candidate-preparation {
-  margin: 1.5rem 0;
-  padding: 1rem;
+  margin: 14px 16px;
+  padding: 16px;
   border: 1px solid var(--border);
-  border-radius: 0.75rem;
+  border-radius: 13px;
   background: var(--panel);
 }
 
-.candidate-preparation ol {
-  padding-left: 1.25rem;
+.candidate-list {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
 }
 
 .candidate-preparation li {
-  margin: 0.75rem 0;
+  margin: 0;
   padding: 0.8rem;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -718,9 +722,12 @@ h1 {
   background: var(--panel);
 }
 
-.candidate-preview h3,
-.candidate-preview h4 {
+.candidate-preview h3 {
   margin-top: 0.25rem;
+}
+
+.candidate-preview > h4 {
+  margin: 1.5rem 0 0.5rem;
 }
 
 .candidate-preview .primary-button {
@@ -741,26 +748,48 @@ h1 {
   margin-top: 1rem;
 }
 
+.preview-observation-form label {
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
 .preview-observation-form input,
 .preview-observation-form select,
 .preview-observation-form textarea {
   width: 100%;
-  padding: 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
+  min-height: 40px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text);
+  background-color: var(--panel);
+  box-shadow: 0 1px 2px rgba(23, 33, 43, 0.04);
   font: inherit;
 }
 
+.preview-observation-form select {
+  appearance: none;
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='m1 1 5 5 5-5' fill='none' stroke='%23255ca8' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+}
+
+.preview-observation-form :is(input, select, textarea):focus-visible {
+  border-color: var(--focus);
+}
+
 .preview-observation-form textarea {
-  min-height: 4rem;
+  min-height: 5rem;
   resize: vertical;
 }
 
 .publication-approval,
 .client-verification {
   min-width: 0;
-  margin: 1rem 0;
+  margin: 14px 16px;
   padding: 1rem;
   border: 1px solid var(--border-strong);
   border-radius: 0.65rem;

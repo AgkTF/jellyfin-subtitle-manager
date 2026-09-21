@@ -65,10 +65,30 @@ for (const viewport of [
 
     await detail.getByRole("button", { name: "Prepare synthetic candidates" }).click();
     const candidates = detail.getByRole("region", { name: "Prepared subtitle candidates" });
-    await expect(detail.getByRole("region", { name: "Publication approval" })
-      .getByRole("button", { name: "Review publication approval" })).toBeDisabled();
-    await expect(detail.getByRole("region", { name: "Client verification" }))
-      .toContainText("No Jellyfin check is pending");
+    const publication = detail.getByRole("region", { name: "Publication approval" });
+    const verification = detail.getByRole("region", { name: "Client verification" });
+    await expect(publication.getByRole("button", { name: "Review publication approval" })).toBeDisabled();
+    await expect(verification).toContainText("No Jellyfin check is pending");
+
+    const detailBox = await detail.boundingBox();
+    for (const nestedSection of [candidates, publication, verification]) {
+      const nestedBox = await nestedSection.boundingBox();
+      expect(nestedBox?.x).toBeGreaterThanOrEqual((detailBox?.x ?? 0) + 10);
+      expect((nestedBox?.x ?? 0) + (nestedBox?.width ?? 0))
+        .toBeLessThanOrEqual((detailBox?.x ?? 0) + (detailBox?.width ?? 0) - 10);
+    }
+    expect(await candidates.getByRole("list").evaluate((element) => getComputedStyle(element).listStyleType))
+      .toBe("none");
+
+    const preview = candidates.getByRole("region", { name: "Selected candidate preview" });
+    const previewOutcome = preview.getByLabel("Preview outcome");
+    expect(await previewOutcome.evaluate((element) => getComputedStyle(element).appearance)).toBe("none");
+    expect(await previewOutcome.evaluate((element) => getComputedStyle(element).backgroundImage)).not.toBe("none");
+    const downloadBox = await preview.getByRole("link", { name: "Download selected candidate attachment" }).boundingBox();
+    const manualHeadingBox = await preview.getByRole("heading", { name: "Load and check manually" }).boundingBox();
+    expect((manualHeadingBox?.y ?? 0) - ((downloadBox?.y ?? 0) + (downloadBox?.height ?? 0)))
+      .toBeGreaterThanOrEqual(16);
+
     const firstCandidate = candidates.getByRole("listitem").first();
     await expect(firstCandidate.getByText("Evidence and file details")).toBeVisible();
     await expect(firstCandidate.getByText("Candidate ID", { exact: true })).toBeHidden();

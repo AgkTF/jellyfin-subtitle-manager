@@ -623,7 +623,7 @@ function RequestWorkspace() {
                           candidate.id === selectedRequest.preparation?.recommendedCandidateId)?.recommendationReason}</p>
                       <p>{rejectedCandidateCount} rejected candidate{rejectedCandidateCount === 1 ? "" : "s"}</p>
                     </>}
-                    {selectedRequest.preparation.candidates.length > 0 && <ol>
+                    {selectedRequest.preparation.candidates.length > 0 && <ul className="candidate-list">
                       {selectedRequest.preparation.candidates.map((candidate) => {
                         const isRecommended = candidate.id === selectedRequest.preparation?.recommendedCandidateId;
                         const reason = rejectionReasons[candidate.id] ?? "";
@@ -680,7 +680,7 @@ function RequestWorkspace() {
                           </li>
                         );
                       })}
-                    </ol>}
+                    </ul>}
                     {selectedCandidate?.attachment !== null && selectedCandidate?.attachment !== undefined && (
                       <section aria-label="Selected candidate preview" className="candidate-preview">
                         <span className="action-kicker">{selectedCandidateWasPreviewed ? "Preview evidence · recorded" : "Next action · preview"}</span>
