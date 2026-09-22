@@ -251,10 +251,17 @@ function isIntegerInRange(value: unknown, minimum: number, maximum: number): val
 function readSearchPage(value: unknown, requestedPage: number): SearchPage {
   if (typeof value !== "object" || value === null) throw new PreparationFailure("malformed-provider-response");
   const response = value as Record<string, unknown>;
-  if (response.page !== requestedPage || !isIntegerInRange(response.total_pages, requestedPage, Number.MAX_SAFE_INTEGER) ||
-      !isIntegerInRange(response.total_count, 0, Number.MAX_SAFE_INTEGER) ||
+  const validEmptySearch = requestedPage === 1 && response.total_pages === 0 && response.total_count === 0 &&
+    Array.isArray(response.data) && response.data.length === 0;
+  if (response.page !== requestedPage || !isIntegerInRange(response.total_count, 0, Number.MAX_SAFE_INTEGER) ||
       !isIntegerInRange(response.per_page, 1, 100) || !Array.isArray(response.data) ||
       response.data.length > response.per_page) {
+    throw new PreparationFailure("malformed-provider-response");
+  }
+  if (validEmptySearch) {
+    return { totalPages: 0, totalCount: response.total_count, perPage: response.per_page, data: response.data };
+  }
+  if (!isIntegerInRange(response.total_pages, requestedPage, Number.MAX_SAFE_INTEGER)) {
     throw new PreparationFailure("malformed-provider-response");
   }
   return {
