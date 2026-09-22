@@ -38,6 +38,26 @@ The discovery trial allowed:
 
 The local trial record contains only this bounded scope, timestamps, counters, terminal outcome, and an optional normalized payload origin. It contains no credentials or generated links.
 
+## Approved redirect follow-up
+
+The user separately approved one follow-up under the original disclosure and safety boundaries, permitting at most one search redirect only when it resolved to the exact approved API origin.
+
+- Started: `2026-09-22T04:04:11.473Z`
+- Completed: `2026-09-22T04:04:11.836Z`
+- Logical search operations: 1
+- Same-origin search redirects followed: 1
+- API HTTP requests: 2
+- Download-link operations: 0
+- Payload attempts and fetches: 0
+- Search results and file records inspected: 0
+- Generated links retained or reported: 0
+- Candidates staged: 0
+- Publication operations: 0
+- Media-library writes: 0
+- Outcome: `malformed-provider-response`
+
+The redirect's normalized origin was validated as `https://api.opensubtitles.com` and it was followed once within the shared request and 90-second run deadlines; the full redirect URL was not retained or reported. The resulting response did not satisfy the frozen JSON search-response contract, so the run stopped without guessing defaults or issuing another request. No credentials or generated link was retained.
+
 ## Follow-up blocker
 
-The frozen policy permits one same-origin search redirect, but this trial's narrower approved runner rejected every redirect. A future trial that follows the policy's same-origin redirect allowance must be proposed and approved separately, while retaining the request ceilings, shared deadlines, credential protections, and zero-retry rule. Any generated payload origin would remain untrusted until provider confirmation or another explicit approval.
+The response difference requires diagnosis under a new, separately approved scope. No additional request may be made and no response validation may be relaxed merely to continue this trial. Any future generated payload origin would remain untrusted until supported by provider-controlled evidence and human approval; if published evidence is unavailable, direct provider confirmation and explicit human configuration approval are both required.
