@@ -157,6 +157,29 @@ test("large numeric provider IDs retain exact ascending order", (context) => {
   });
 });
 
+test("a valid zero-page empty search is a no-candidates result", (context) => {
+  const transport = new RouteTransport(() => page(1, 0, [], 0));
+  withPreparation(context, transport, (preparation) => {
+    const prepared = preparation.prepare(identityVideo, "ar");
+    assert.equal(prepared.outcome, "no-candidates");
+    assert.equal(transport.requests.length, 1);
+  });
+});
+
+for (const [name, response] of [
+  ["non-empty data", page(1, 0, [result("1", 1)], 1)],
+  ["non-zero total count", page(1, 0, [], 1)],
+  ["non-first page", page(2, 0, [], 0)],
+] as const) {
+  test(`an inconsistent zero-page ${name} response is malformed`, (context) => {
+    const transport = new RouteTransport(() => response);
+    withPreparation(context, transport, (preparation) => {
+      assert.equal(preparation.prepare(identityVideo, "ar").outcome, "malformed-provider-response");
+      assert.equal(transport.requests.length, 1);
+    });
+  });
+}
+
 test("empty bounded search is a durable no-candidates result and performs no hidden work after restart", (context) => {
   const directory = mkdtempSync(path.join(tmpdir(), "opensubtitles-empty-"));
   context.after(() => rmSync(directory, { recursive: true, force: true }));
