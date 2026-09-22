@@ -123,6 +123,7 @@ test("candidate, destination, and request-version changes invalidate the reviewe
   await publication.getByRole("button", { name: "Review publication approval" }).click();
   await expect(publication).toContainText("Request version 1");
 
+  await candidates.getByRole("button", { name: "Show 2 alternatives" }).click();
   const secondCandidate = candidates.getByRole("listitem").nth(1);
   await secondCandidate.getByRole("button", { name: "Select Synthetic candidate 2" }).click();
   expect(await definitionValue(secondCandidate, "Proposed destination")).not.toBe(firstDestination);

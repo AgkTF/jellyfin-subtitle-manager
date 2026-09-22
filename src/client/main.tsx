@@ -68,6 +68,10 @@ function preparationOutcomeLabel(outcome: NonNullable<RequestView["preparation"]
     "malformed-provider-response": "Malformed provider response",
     "provider-failed": "Provider failed",
     "unsafe-content": "Unsafe response rejected",
+    "duplicate-candidate": "Duplicate candidates exhausted this run",
+    "payload-budget-exhausted": "Payload attempt budget exhausted",
+    "run-deadline-exhausted": "Preparation deadline exhausted",
+    failed: "Preparation failed",
   };
   return `${labels[outcome] ?? "Preparation stopped"} (${outcome})`;
 }
@@ -196,6 +200,7 @@ function RequestWorkspace() {
   const [rejectionInProgress, setRejectionInProgress] = useState<string | null>(null);
   const [recoveryInProgress, setRecoveryInProgress] = useState(false);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
+  const [showAlternatives, setShowAlternatives] = useState(false);
   const [previewClient, setPreviewClient] = useState("Existing desktop player");
   const [previewOutcome, setPreviewOutcome] = useState<PreviewOutcome>("inconclusive");
   const [previewSample, setPreviewSample] = useState<Record<"beginning" | "middle" | "end", PreviewSampleStatus>>({
@@ -246,6 +251,11 @@ function RequestWorkspace() {
   ) ?? preparedCandidates.find((candidate) =>
     candidate.id === selectedRequest?.preparation?.recommendedCandidateId && candidate.rejection === null,
   ) ?? preparedCandidates.find((candidate) => candidate.rejection === null);
+  const recommendedCandidateId = selectedRequest?.preparation?.recommendedCandidateId ?? null;
+  const visibleCandidates = showAlternatives || recommendedCandidateId === null
+    ? preparedCandidates
+    : preparedCandidates.filter((candidate) => candidate.id === recommendedCandidateId);
+  const alternativeCount = Math.max(0, preparedCandidates.length - 1);
   const selectedCandidateWasPreviewed = selectedRequest !== null && selectedCandidate !== undefined &&
     (selectedRequest.previewObservations ?? []).some((observation) =>
       observation.video.libraryId === selectedRequest.video.libraryId &&
@@ -273,6 +283,7 @@ function RequestWorkspace() {
     setDetailFailed(false);
     setTransitionConflict(false);
     setSelectedCandidateId(null);
+    setShowAlternatives(false);
     try {
       setSelectedRequest(await loadRequest(request.id));
     } catch {
@@ -313,6 +324,7 @@ function RequestWorkspace() {
       }
       if (!response.ok) throw new Error(`Candidate preparation failed with ${response.status}`);
       setSelectedRequest(await response.json() as RequestView);
+      setShowAlternatives(false);
     } catch {
       setDetailFailed(true);
     } finally {
@@ -336,6 +348,7 @@ function RequestWorkspace() {
       }
       if (!response.ok) throw new Error(`Preparation retry failed with ${response.status}`);
       setSelectedRequest(await response.json() as RequestView);
+      setShowAlternatives(false);
       setTransitionConflict(false);
     } catch {
       setDetailFailed(true);
@@ -656,8 +669,16 @@ function RequestWorkspace() {
                           : `${rejectedCandidateCount} rejected candidate${rejectedCandidateCount === 1 ? "" : "s"}. Rejected candidates remain excluded from recommendation.`}</span>
                       </div>
                     </>}
-                    {selectedRequest.preparation.candidates.length > 0 && <ul className="candidate-list">
-                      {selectedRequest.preparation.candidates.map((candidate) => {
+                    {alternativeCount > 0 && recommendedCandidateId !== null && (
+                      <button className="secondary-button" onClick={() => {
+                        if (showAlternatives) setSelectedCandidateId(null);
+                        setShowAlternatives((current) => !current);
+                      }} type="button">
+                        {showAlternatives ? "Hide alternatives" : `Show ${alternativeCount} alternative${alternativeCount === 1 ? "" : "s"}`}
+                      </button>
+                    )}
+                    {visibleCandidates.length > 0 && <ul className="candidate-list">
+                      {visibleCandidates.map((candidate) => {
                         const isRecommended = candidate.id === selectedRequest.preparation?.recommendedCandidateId;
                         const reason = rejectionReasons[candidate.id] ?? "";
                         return (

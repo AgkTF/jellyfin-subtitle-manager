@@ -4,7 +4,7 @@ import { test } from "./application.js";
 
 test.use({ preparationMode: "opensubtitles" });
 
-test("reviews one durable fixture-backed OpenSubtitles candidate after restart", async ({ page, application }) => {
+test("reviews a recommendation and requests durable OpenSubtitles alternatives after restart", async ({ page, application }) => {
   await page.goto(application.url);
   await page.getByRole("button", { name: "Request subtitles" }).click();
   const picker = page.getByRole("dialog", { name: "Inspect saved inventory" });
@@ -19,7 +19,17 @@ test("reviews one durable fixture-backed OpenSubtitles candidate after restart",
   await detail.getByRole("button", { name: "Prepare candidates" }).click();
   const candidates = detail.getByRole("region", { name: "Prepared subtitle candidates" });
   await expect(candidates.getByRole("listitem")).toHaveCount(1);
+  await expect(candidates).toContainText("Arabic standard dialogue candidate for release Quiet.Orbit.2025.1080p.WEB-DL");
   await expect(candidates).toContainText("opensubtitles-v1 · subtitle 918273 · file 456789");
+  await candidates.getByRole("button", { name: "Show 2 alternatives" }).click();
+  await expect(candidates.getByRole("listitem")).toHaveCount(3);
+  await expect(candidates).toContainText("Alternative candidate");
+  await candidates.getByRole("button", { name: "Select OpenSubtitles candidate 918274" }).click();
+  await expect(candidates.getByRole("region", { name: "Selected candidate preview" }))
+    .toContainText("opensubtitles-918274-456790");
+  await candidates.getByRole("button", { name: "Hide alternatives" }).click();
+  await expect(candidates.getByRole("region", { name: "Selected candidate preview" }))
+    .toContainText("opensubtitles-918273-456789");
   await expect(candidates).toContainText("unmeasured timing");
   await expect(candidates).toContainText("unmeasured completeness");
   await expect(candidates).toContainText("real provider traffic remains disabled");
@@ -29,7 +39,9 @@ test("reviews one durable fixture-backed OpenSubtitles candidate after restart",
   await application.restart();
   await page.reload();
   await page.getByRole("row", { name: /Quiet Orbit \(2025\).*Arabic.*Active/ }).click();
-  await expect(page.getByRole("region", { name: "Prepared subtitle candidates" }).getByRole("listitem")).toHaveCount(1);
-  await expect(page.getByRole("region", { name: "Prepared subtitle candidates" }))
-    .toContainText("Quiet.Orbit.2025.1080p.WEB-DL");
+  const restoredCandidates = page.getByRole("region", { name: "Prepared subtitle candidates" });
+  await expect(restoredCandidates.getByRole("listitem")).toHaveCount(1);
+  await restoredCandidates.getByRole("button", { name: "Show 2 alternatives" }).click();
+  await expect(restoredCandidates.getByRole("listitem")).toHaveCount(3);
+  await expect(restoredCandidates).toContainText("Quiet.Orbit.2025.1080p.WEB-DL");
 });

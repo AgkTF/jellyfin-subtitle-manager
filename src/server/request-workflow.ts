@@ -550,6 +550,11 @@ export function openRequestWorkflow(options: {
     SET candidates_json = ?, recommended_candidate_id = ?, outcome = ?, explanation = ?, next_actions_json = ?
     WHERE request_id = ?
   `);
+  const updatePreparationOutcome = database.prepare(`
+    UPDATE request_preparations
+    SET outcome = ?, explanation = ?, next_actions_json = ?
+    WHERE request_id = ?
+  `);
   const insertPreparation = database.prepare(`
     INSERT OR IGNORE INTO request_preparations (
       request_id, candidates_json, recommended_candidate_id, outcome, explanation, next_actions_json
@@ -841,7 +846,11 @@ export function openRequestWorkflow(options: {
   };
   const persistPreparation = database.transaction((requestId: string, preparation: CandidatePreparation,
     mode: PreparationMode, runId: string | undefined) => {
-    if (mode === "retry") {
+    if (mode === "retry" && preparation.candidates.length === 0) {
+      updatePreparationOutcome.run(
+        preparation.outcome, preparation.explanation, JSON.stringify(preparation.nextActions), requestId,
+      );
+    } else if (mode === "retry") {
       replacePreparation.run(
         JSON.stringify(preparation.candidates), preparation.recommendedCandidateId,
         preparation.outcome, preparation.explanation, JSON.stringify(preparation.nextActions), requestId,

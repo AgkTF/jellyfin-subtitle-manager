@@ -606,8 +606,13 @@ export function createOpenSubtitlesPreparation(options: {
 
         let localAttemptCount = 0;
         const reservedFileIds = new Set<number>();
+        const reservedSubtitleIds = new Set<string>();
+        const deliveredContentHashes = new Set<string>();
+        const candidates: SubtitleCandidate[] = [];
+        const attachments: CandidatePreparation["attachments"] = [];
         let lastCandidateFailure: PreparationFailure | undefined;
-        let sawDurableDuplicate = false;
+        let sawDuplicate = false;
+        let spentAttempts = 0;
         for (const selected of eligible) {
           if (reservedFileIds.has(selected.file.file_id)) continue;
           reservedFileIds.add(selected.file.file_id);
@@ -615,10 +620,21 @@ export function createOpenSubtitlesPreparation(options: {
             ? (localAttemptCount += 1) <= MAX_PAYLOAD_ATTEMPTS ? localAttemptCount : "exhausted"
             : run.reservePayloadAttempt(selected.file.file_id);
           if (attempt === "duplicate") {
-            sawDurableDuplicate = true;
+            sawDuplicate = true;
             continue;
           }
-          if (attempt === "exhausted" || attempt > MAX_PAYLOAD_ATTEMPTS) return terminal("payload-budget-exhausted");
+          if (attempt === "exhausted" || attempt > MAX_PAYLOAD_ATTEMPTS) {
+            if (candidates.length > 0) break;
+            return terminal("payload-budget-exhausted");
+          }
+          spentAttempts = Math.max(spentAttempts, attempt);
+          if (reservedSubtitleIds.has(selected.subtitleId)) {
+            sawDuplicate = true;
+            lastCandidateFailure = new PreparationFailure("duplicate-candidate");
+            if (attempt >= MAX_PAYLOAD_ATTEMPTS) break;
+            continue;
+          }
+          reservedSubtitleIds.add(selected.subtitleId);
           try {
             const downloadResponse = request({
               method: "POST",
@@ -638,12 +654,14 @@ export function createOpenSubtitlesPreparation(options: {
             if (fields.remaining === 0) throw new PreparationFailure("quota-exhausted");
             const original = validatePlainSrt(payloadRequest(fields.link));
             const contentHash = createHash("sha256").update(original).digest("hex");
-            const existingStagedFileId = options.candidateFiles.findByContentHash?.(contentHash);
-            if (existingStagedFileId !== undefined) {
+            if (deliveredContentHashes.has(contentHash) ||
+                options.candidateFiles.findByContentHash?.(contentHash) !== undefined) {
               lastCandidateFailure = new PreparationFailure("duplicate-candidate");
-              sawDurableDuplicate = true;
+              sawDuplicate = true;
+              if (attempt >= MAX_PAYLOAD_ATTEMPTS) break;
               continue;
             }
+            deliveredContentHashes.add(contentHash);
             const candidateId = `opensubtitles-${selected.subtitleId}-${selected.file.file_id}`;
             const provider = {
               name: "opensubtitles-v1" as const,
@@ -669,6 +687,14 @@ export function createOpenSubtitlesPreparation(options: {
             } catch {
               throw new PreparationFailure("unsafe-content");
             }
+            const languageEvidence = language === "ar" ? "Arabic" : "English";
+            const typeEvidence = selected.hearingImpaired ? "SDH" : "standard dialogue";
+            const associationEvidence = selected.moviehashMatch
+              ? "provider-reported movie-hash match"
+              : "provider title identity";
+            const provenanceEvidence = selected.fromTrusted
+              ? "provider trusted-source claim"
+              : "provider provenance without a trusted-source claim";
             const candidate: SubtitleCandidate = {
               id: candidateId,
               label: `OpenSubtitles candidate ${selected.subtitleId}`,
@@ -683,27 +709,34 @@ export function createOpenSubtitlesPreparation(options: {
               timing: { status: "unmeasured", evidence: "No dialogue synchronization measurement was performed.", limits: "Provider metadata and valid SRT structure do not establish synchronization." },
               completeness: { status: "unmeasured", evidence: "No full-dialogue coverage measurement was performed.", limits: "A valid SRT structure does not establish full-dialogue coverage." },
               destination: `/synthetic/subtitles/${video.id}.${language}.opensubtitles.srt`,
-              recommendationReason: "Selected by bounded provider metadata ordering; quality, completeness, and timing remain unmeasured.",
+              recommendationReason: `${languageEvidence} ${typeEvidence} candidate for release ${selected.release}; ranked using ${associationEvidence} and ${provenanceEvidence}. Synchronization, completeness, and authorship remain unmeasured.`,
               identityEvidenceHash,
               contentHash,
             };
-            return {
-              outcome: "candidates-found",
-              explanation: "Prepared one bounded OpenSubtitles fixture candidate for review.",
-              nextActions: ["defer"],
-              candidates: [candidate],
-              recommendedCandidateId: candidate.id,
-              attachments: [{ candidateId, filename: safeFilename(selected.file.file_name), stagedFileId }],
-            };
+            candidates.push(candidate);
+            attachments.push({ candidateId, filename: safeFilename(selected.file.file_name), stagedFileId });
+            if (attempt >= MAX_PAYLOAD_ATTEMPTS) break;
           } catch (error) {
             if (!(error instanceof PreparationFailure)) throw error;
             if (error.outcome === "authentication-failed" || error.outcome === "quota-exhausted" ||
                 error.outcome === "run-deadline-exhausted") throw error;
             lastCandidateFailure = error;
-            if (attempt >= MAX_PAYLOAD_ATTEMPTS) return terminal("payload-budget-exhausted");
+            if (attempt >= MAX_PAYLOAD_ATTEMPTS) break;
           }
         }
-        return terminal(lastCandidateFailure?.outcome ?? (sawDurableDuplicate ? "duplicate-candidate" : "no-candidates"));
+        if (candidates.length > 0) {
+          const count = candidates.length;
+          return {
+            outcome: "candidates-found",
+            explanation: `Prepared ${count} bounded OpenSubtitles candidate${count === 1 ? "" : "s"} for review using ${spentAttempts} of three payload attempts.`,
+            nextActions: ["defer"],
+            candidates,
+            recommendedCandidateId: candidates[0].id,
+            attachments,
+          };
+        }
+        if (spentAttempts >= MAX_PAYLOAD_ATTEMPTS) return terminal("payload-budget-exhausted");
+        return terminal(lastCandidateFailure?.outcome ?? (sawDuplicate ? "duplicate-candidate" : "no-candidates"));
       } catch (error) {
         if (error instanceof PreparationFailure) return terminal(error.outcome);
         return terminal("malformed-provider-response");

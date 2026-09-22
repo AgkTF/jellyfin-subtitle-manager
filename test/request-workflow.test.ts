@@ -6,6 +6,8 @@ import test from "node:test";
 
 import Database from "better-sqlite3";
 
+import type { CandidatePreparationAdapter } from "../src/server/candidate-preparation.js";
+import { prepareSyntheticCandidates } from "../src/server/synthetic-preparation.js";
 import {
   CandidateRejectionValidationError,
   openRequestWorkflow,
@@ -232,6 +234,45 @@ test("preparing an active request stores three bounded synthetic candidates and 
   const restored = reopened.getRequest(syntheticRequest.id);
   assert.deepEqual(restored?.preparation, prepared.preparation);
   assert.equal(restored?.version, 1);
+});
+
+test("a failed explicit preparation retry preserves prior candidates and rejection evidence", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "subtitle-preparation-retry-evidence-"));
+  const databasePath = join(directory, "workflow.sqlite");
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  let calls = 0;
+  const preparation: CandidatePreparationAdapter = {
+    prepare(video, language) {
+      calls += 1;
+      if (calls === 1) return prepareSyntheticCandidates(video, language);
+      return {
+        outcome: "duplicate-candidate",
+        explanation: "Every payload duplicated evidence already retained for this request.",
+        nextActions: ["defer", "retry"],
+        candidates: [], recommendedCandidateId: null, attachments: [],
+      };
+    },
+  };
+  const workflow = openRequestWorkflow({ databasePath, preparation });
+  context.after(() => workflow.close());
+  workflow.issue({
+    type: "create-request", request: { id: "retry-evidence", version: 0 },
+    video: syntheticRequest.video, language: syntheticRequest.language,
+  });
+  const prepared = workflow.issue({ type: "prepare-request", request: { id: "retry-evidence", version: 1 } });
+  const candidate = prepared.preparation?.candidates[0];
+  assert.ok(candidate);
+  workflow.issue({
+    type: "reject-candidate", request: { id: "retry-evidence", version: 1 },
+    candidate: { id: candidate.id, identityEvidenceHash: candidate.identityEvidenceHash },
+    reason: "Retain this decision across provider retry.",
+  });
+
+  const retried = workflow.issue({ type: "retry-preparation", request: { id: "retry-evidence", version: 1 } });
+  assert.equal(retried.preparation?.outcome, "duplicate-candidate");
+  assert.equal(retried.preparation?.candidates.length, 3);
+  assert.equal(retried.preparation?.candidates[0].rejection?.reason, "Retain this decision across provider retry.");
+  assert.notEqual(retried.preparation?.candidates[1].attachment, null);
 });
 
 test("preparation outcomes are distinct, explicit, and durable", (context) => {

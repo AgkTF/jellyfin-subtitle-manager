@@ -133,7 +133,7 @@ test("bounded pagination collects eligible files before deterministic payload se
   withPreparation(context, transport, (preparation) => {
     const prepared = preparation.prepare(identityVideo, "ar");
     assert.equal(prepared.outcome, "candidates-found");
-    assert.deepEqual(prepared.candidates.map((candidate) => candidate.provider?.fileId), [100]);
+    assert.deepEqual(prepared.candidates.map((candidate) => candidate.provider?.fileId), [100, 200]);
     assert.equal(prepared.candidates[0].provider?.fromTrusted, true);
     assert.equal(prepared.candidates[0].provider?.downloadCount, 1);
     assert.deepEqual(transport.requests.filter((request) => request.url.includes("/subtitles?"))
